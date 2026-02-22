@@ -67,8 +67,8 @@ class MainArgs:
         resume_parser.add_argument('job_or_container_id', help=id_help)
 
         # Poll command
-        poll_parser = subparsers.add_parser('poll', help='Get job status (poll)')
-        poll_parser.add_argument('job_or_container_id', help=id_help)
+        status_parser = subparsers.add_parser('status', help='Get job status')
+        status_parser.add_argument('job_or_container_id', help=id_help)
 
         # List command
         list_parser = subparsers.add_parser('list', help='List all jobs')
@@ -121,8 +121,8 @@ class Main:
             return cls.cmd_pause(dock, args)
         elif args.command == 'resume':
             return cls.cmd_resume(dock, args)
-        elif args.command == 'poll':
-            return cls.cmd_poll(dock, args)
+        elif args.command == 'status':
+            return cls.cmd_status(dock, args)
         elif args.command == 'list':
             return cls.cmd_list(dock, args)
         elif args.command == 'logs':
@@ -155,7 +155,7 @@ class Main:
             # Helpful next steps (use correct CLI command for current mode)
             console.print(f"\n[bold]Next steps:[/bold]")
             console.print(f"  • View logs:   [cyan]{cli_command} logs {job.job_id}[/cyan]")
-            console.print(f"  • Check status: [cyan]{cli_command} poll {job.job_id}[/cyan]")
+            console.print(f"  • Check status: [cyan]{cli_command} status {job.job_id}[/cyan]")
             console.print(f"  • List all jobs: [cyan]{cli_command} list[/cyan]")
             console.print(f"  • Stop training: [cyan]{cli_command} stop {job.job_id}[/cyan]\n")
 
@@ -205,8 +205,8 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_poll(dock: LlamaFactoryDock, args) -> int:
-        """Get job status (poll)"""
+    def cmd_status(dock: LlamaFactoryDock, args) -> int:
+        """Get job status"""
         try:
             job = dock.poll(args.job_or_container_id)
 
@@ -254,7 +254,7 @@ class Main:
             )
 
         console.print(table)
-        console.print(f"\n[dim]Tip: Use job_id or container_id with poll/logs/stop etc.[/dim]\n")
+        console.print(f"\n[dim]Tip: Use job_id or container_id with status/logs/stop etc.[/dim]\n")
         return 0
 
     @staticmethod
