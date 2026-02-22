@@ -1,0 +1,18 @@
+services:
+  dock-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: llama-factory-dock-api
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount Docker socket to manage training containers
+      - /var/run/docker.sock:/var/run/docker.sock  # KEY!
+      # Mount data and output directories
+      - ./data:/host/data
+      - ./output:/host/output
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: dock-api --host 0.0.0.0 --port 8080
+    restart: unless-stopped

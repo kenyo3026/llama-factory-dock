@@ -1,0 +1,29 @@
+[project]
+name = "llama-factory-dock"
+version = "0.1.0"
+description = "Docker-based API for LlamaFactory training orchestration"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "fastmcp>=0.2.0",
+    "pydantic>=2.0.0",
+    "docker>=7.0.0",
+    "psutil>=6.0.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+dock = "dock.cli:main"
+dock-dryrun = "dock.dryrun:main"
+dock-api = "dock.app:main"
+dock-mcp = "dock.mcp:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dock"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
