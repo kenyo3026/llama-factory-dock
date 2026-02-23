@@ -4,6 +4,7 @@ import uuid
 import yaml
 import pathlib
 import tempfile
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Union
@@ -77,7 +78,8 @@ class TrainingJob:
 
 class LlamaFactoryDock:
 
-    def __init__(self):
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.docker_client = docker.from_env()
         self.docker_image = DOCKER_IMAGE
         self.docker_container_platform = DOCKER_CONTAINER_PLATFORM
@@ -88,12 +90,20 @@ class LlamaFactoryDock:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        self.logger.info(f"LlamaFactoryDock initialized")
+        self.logger.debug(f"Docker image: {self.docker_image}")
+        self.logger.debug(f"Platform: {self.docker_container_platform}")
+        self.logger.debug(f"Data directory: {self.data_dir}")
+        self.logger.debug(f"Output directory: {self.output_dir}")
+
     def start(
         self,
         config: Union[None, str, pathlib.Path, Dict[str, Any]],
         auto_pull: bool = True,
     ) -> TrainingJob:
         """Start a training job"""
+        self.logger.info(f"Starting training job with config type: {type(config).__name__}")
+
         if isinstance(config, str):
             config = ConfigLoader.load(config)
 
@@ -115,6 +125,10 @@ class LlamaFactoryDock:
             }
 
             container_name = f"llama-factory-dock-{job_id}"
+
+            self.logger.info(f"Starting container: {container_name}")
+            self.logger.debug(f"Job ID: {job_id}")
+            self.logger.debug(f"Volumes: data={self.data_dir}, output={self.output_dir}")
 
             # Start Docker container
             container = self.docker_client.containers.run(
@@ -142,10 +156,13 @@ class LlamaFactoryDock:
             )
 
             # Build TrainingJob from container
-            return self._container_to_job(container)
+            job = self._container_to_job(container)
+            self.logger.info(f"Training job started successfully: {job.job_id} (container: {job.container_id[:12]})")
+            return job
 
         except Exception as e:
             # Return a failed job
+            self.logger.error(f"Failed to start training job: {e}", exc_info=True)
             return TrainingJob(
                 job_id="failed",
                 container_id="",
@@ -157,25 +174,34 @@ class LlamaFactoryDock:
 
     def stop(self, job_or_container_id: str, timeout: int = 10, force: bool = False) -> TrainingJob:
         """Stop a training job (accepts job_id or container_id)"""
+        self.logger.info(f"Stopping job: {job_or_container_id} (force={force})")
         container = self._resolve_container(job_or_container_id)
         wait_seconds = 1 if force else timeout
         container.stop(timeout=wait_seconds)
         container.reload()
-        return self._container_to_job(container)
+        job = self._container_to_job(container)
+        self.logger.info(f"Job stopped: {job.job_id}")
+        return job
 
     def pause(self, job_or_container_id: str) -> TrainingJob:
         """Pause a training job (accepts job_id or container_id)"""
+        self.logger.info(f"Pausing job: {job_or_container_id}")
         container = self._resolve_container(job_or_container_id)
         container.pause()
         container.reload()
-        return self._container_to_job(container)
+        job = self._container_to_job(container)
+        self.logger.info(f"Job paused: {job.job_id}")
+        return job
 
     def resume(self, job_or_container_id: str) -> TrainingJob:
         """Resume a paused training job (accepts job_id or container_id)"""
+        self.logger.info(f"Resuming job: {job_or_container_id}")
         container = self._resolve_container(job_or_container_id)
         container.unpause()
         container.reload()
-        return self._container_to_job(container)
+        job = self._container_to_job(container)
+        self.logger.info(f"Job resumed: {job.job_id}")
+        return job
 
     def poll(self, job_or_container_id: str) -> TrainingJob:
         """Get job status (accepts job_id or container_id)"""
@@ -337,14 +363,14 @@ class LlamaFactoryDock:
         """Ensure Docker image exists, pull if needed"""
         try:
             self.docker_client.images.get(self.docker_image)
-            print(f"✓ Docker image already exists: {self.docker_image}")
+            self.logger.info(f"Docker image already exists: {self.docker_image}")
         except docker.errors.ImageNotFound:
-            print(f"Pulling Docker image: {self.docker_image} (this may take a while...)")
-            print(f"  Note: Pulling x86_64 image on ARM64 Mac (Apple Silicon)")
+            self.logger.info(f"Pulling Docker image: {self.docker_image} (this may take a while...)")
+            self.logger.info(f"Note: Pulling x86_64 image on ARM64 Mac (Apple Silicon)")
             try:
                 image = self.docker_client.images.pull(self.docker_image, platform="linux/amd64")
-                print(f"✓ Image pulled successfully: {self.docker_image}")
-                print(f"  Image ID: {image.id}")
+                self.logger.info(f"Image pulled successfully: {self.docker_image}")
+                self.logger.debug(f"Image ID: {image.id}")
             except Exception as pull_error:
                 raise RuntimeError(f"Failed to pull Docker image {self.docker_image}: {pull_error}") from pull_error
 

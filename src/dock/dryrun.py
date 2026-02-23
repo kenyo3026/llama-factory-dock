@@ -9,9 +9,9 @@ from .main import Main, MainArgs
 from .dock.dryrun import LlamaFactoryDryRunDock
 
 
-def _dryrun_dock():
+def _dryrun_dock(logger=None):
     """Dock factory for dryrun mode (5 min simulated training for quick demo)"""
-    return LlamaFactoryDryRunDock(dryrun_training_duration=300)
+    return LlamaFactoryDryRunDock(dryrun_training_duration=300, logger=logger)
 
 
 class DryrunMain(Main):

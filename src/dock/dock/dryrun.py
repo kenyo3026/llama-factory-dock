@@ -1,8 +1,9 @@
 import json
 import uuid
 import pathlib
+import logging
 from datetime import datetime
-from typing import Dict, List, Any, Union
+from typing import Dict, List, Any, Union, Optional
 
 from .utils.loader import ConfigLoader
 from .instance import (
@@ -27,16 +28,19 @@ class LlamaFactoryDryRunDock(LlamaFactoryDock):
     - Doesn't consume GPU resources
     """
 
-    def __init__(self, dryrun_training_duration: int = 3600):
+    def __init__(self, dryrun_training_duration: int = 3600, logger: Optional[logging.Logger] = None):
         """
         Initialize dryrun dock
 
         Args:
             dryrun_training_duration: Duration of simulated training in seconds (default: 3600 = 1 hour)
+            logger: Optional logger instance
         """
-        super().__init__()
+        super().__init__(logger=logger)
         self.dryrun_training_duration = dryrun_training_duration
         self.docker_image = DOCKER_IMAGE
+        self.logger.info(f"LlamaFactoryDryRunDock initialized (dryrun mode)")
+        self.logger.debug(f"Dryrun duration: {dryrun_training_duration}s")
 
     def start(
         self,
@@ -44,6 +48,8 @@ class LlamaFactoryDryRunDock(LlamaFactoryDock):
         auto_pull: bool = True,
     ) -> TrainingJob:
         """Start a dryrun training job (container with simulated logs)"""
+        self.logger.info(f"[DRYRUN] Starting training job with config type: {type(config).__name__}")
+
         if isinstance(config, str):
             config = ConfigLoader.load(config)
 
@@ -78,9 +84,12 @@ class LlamaFactoryDryRunDock(LlamaFactoryDock):
                 labels=labels,
             )
 
-            return self._container_to_job(container)
+            job = self._container_to_job(container)
+            self.logger.info(f"[DRYRUN] Training job started: {job.job_id} (container: {job.container_id[:12]})")
+            return job
 
         except Exception as e:
+            self.logger.error(f"[DRYRUN] Failed to start training job: {e}", exc_info=True)
             return TrainingJob(
                 job_id="failed",
                 container_id="",

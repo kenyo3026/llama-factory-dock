@@ -6,14 +6,16 @@ with different default configurations.
 """
 
 import argparse
+import logging
 import pathlib
 import sys
 from dataclasses import dataclass, fields
-from typing import Union, Type
+from typing import Union, Type, Optional
 from rich.console import Console
 from rich.table import Table
 
 from .dock import LlamaFactoryDock
+from .utils.logger import enable_rich_logger
 
 console = Console()
 
@@ -34,12 +36,30 @@ class MainArgs:
     # Logs
     tail: int = 100
 
+    # Logger configuration
+    log_dir: Union[str, pathlib.Path, None] = None
+    log_level: str = "INFO"
+
     @classmethod
     def from_args(cls):
         """Parse command line arguments"""
         parser = argparse.ArgumentParser(
             description="LlamaFactory Training Dock",
             formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+
+        # Global options
+        parser.add_argument(
+            '--log-dir',
+            dest='log_dir',
+            help='Directory for log files (default: ./logs)',
+        )
+        parser.add_argument(
+            '--log-level',
+            dest='log_level',
+            choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+            default='INFO',
+            help='Logging level (default: INFO)',
         )
 
         subparsers = parser.add_subparsers(dest='command', help='Available commands')
@@ -108,8 +128,21 @@ class Main:
         """Main execution entry point"""
         args = cls.args.from_args()
 
+        # Setup logger
+        log_dir = pathlib.Path(args.log_dir) if args.log_dir else pathlib.Path('./logs')
+        log_level = getattr(logging, args.log_level, logging.INFO)
+        logger = enable_rich_logger(
+            level=log_level,
+            directory=log_dir,
+            name='llama-factory-dock',
+        )
+
+        logger.info("LlamaFactory Dock initialized")
+        logger.debug(f"Log directory: {log_dir}")
+        logger.debug(f"Log level: {args.log_level}")
+
         # Initialize dock (subclasses override dock)
-        dock = cls.dock()
+        dock = cls.dock(logger=logger)
 
         # Route to command handlers
         cli_cmd = getattr(cls, 'cli_command', 'dock')

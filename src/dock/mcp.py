@@ -5,11 +5,14 @@ Provides MCP tools for training control: start, stop, pause, resume.
 """
 
 import argparse
+import logging
+import pathlib
 from typing import Optional, Dict, Any, Union
 
 from fastmcp import FastMCP
 
 from .dock import LlamaFactoryDock
+from .utils.logger import enable_rich_logger
 
 
 DEFAULT_HOST = "0.0.0.0"
@@ -42,13 +45,17 @@ def get_dock() -> LlamaFactoryDock:
     return _dock
 
 
-def setup_mcp_server() -> FastMCP:
+def setup_mcp_server(
+    logger: Optional[logging.Logger] = None,
+) -> FastMCP:
     """
     Create and configure FastMCP server for LlamaFactory Dock.
 
     Returns:
         Configured FastMCP server instance.
     """
+    logger = logger or logging.getLogger(__name__)
+
     mcp = FastMCP(
         name=MCP_NAME,
         instructions=MCP_INSTRUCTION,
@@ -83,15 +90,21 @@ def setup_mcp_server() -> FastMCP:
             Returns {"error": "...", "status": "failed"} on failure.
         """
         if config_path and config:
+            logger.warning("start_training: both config_path and config provided")
             return {"error": "Provide either config_path or config, not both"}
         if not config_path and not config:
+            logger.warning("start_training: neither config_path nor config provided")
             return {"error": "Provide config_path or config"}
 
         cfg: Union[str, Dict] = config_path or config
+        cfg_desc = f"config_path={config_path!r}" if config_path else "config=dict"
+        logger.info(f"start_training: starting job with {cfg_desc}")
         try:
             job = get_dock().start(cfg)
+            logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             return job.to_dict()
         except Exception as e:
+            logger.error(f"start_training: failed to start job: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -117,12 +130,16 @@ def setup_mcp_server() -> FastMCP:
             Job info dict with updated status after stop operation.
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.info(f"stop_training: job_or_container_id={job_or_container_id} force={force}")
         try:
             job = get_dock().stop(job_or_container_id, force=force)
+            logger.info(f"stop_training: job stopped job_id={job.job_id} status={job.status}")
             return job.to_dict()
         except ValueError as e:
+            logger.warning(f"stop_training: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"stop_training: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -145,12 +162,16 @@ def setup_mcp_server() -> FastMCP:
             Job info dict with status changed to "paused".
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.info(f"pause_training: job_or_container_id={job_or_container_id}")
         try:
             job = get_dock().pause(job_or_container_id)
+            logger.info(f"pause_training: job paused job_id={job.job_id}")
             return job.to_dict()
         except ValueError as e:
+            logger.warning(f"pause_training: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"pause_training: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -173,12 +194,16 @@ def setup_mcp_server() -> FastMCP:
             Job info dict with status changed back to "running".
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.info(f"resume_training: job_or_container_id={job_or_container_id}")
         try:
             job = get_dock().resume(job_or_container_id)
+            logger.info(f"resume_training: job resumed job_id={job.job_id}")
             return job.to_dict()
         except ValueError as e:
+            logger.warning(f"resume_training: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"resume_training: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -202,12 +227,15 @@ def setup_mcp_server() -> FastMCP:
             Full job info dict with all available details.
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.debug(f"get_training_status: job_or_container_id={job_or_container_id}")
         try:
             job = get_dock().poll(job_or_container_id)
             return job.to_dict()
         except ValueError as e:
+            logger.warning(f"get_training_status: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"get_training_status: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -230,14 +258,18 @@ def setup_mcp_server() -> FastMCP:
             Dict with job_id and logs (list of strings).
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.debug(f"get_training_logs: job_or_container_id={job_or_container_id} tail={tail}")
         try:
             if tail < 1 or tail > 10000:
+                logger.warning(f"get_training_logs: invalid tail={tail}")
                 return {"error": "tail must be between 1 and 10000", "status": "invalid_param"}
             logs = get_dock().poll_logs(job_or_container_id, tail=tail)
             return {"job_id": job_or_container_id, "logs": logs}
         except ValueError as e:
+            logger.warning(f"get_training_logs: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"get_training_logs: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -259,6 +291,7 @@ def setup_mcp_server() -> FastMCP:
             Dict with job_id and progress_percentage (0.0-100.0).
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.debug(f"get_training_progress: job_or_container_id={job_or_container_id}")
         try:
             job = get_dock().poll(job_or_container_id)
             return {
@@ -266,8 +299,10 @@ def setup_mcp_server() -> FastMCP:
                 "progress_percentage": job.get_progress_percentage()
             }
         except ValueError as e:
+            logger.warning(f"get_training_progress: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"get_training_progress: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -286,13 +321,16 @@ def setup_mcp_server() -> FastMCP:
             Dict with "jobs" (list of job info dicts) and "total" (count).
             Each job dict contains: job_id, container_id, status, progress, timestamps, etc.
         """
+        logger.info("list_training_jobs: listing all jobs")
         try:
             jobs = get_dock().list_jobs()
+            logger.info(f"list_training_jobs: found {len(jobs)} job(s)")
             return {
                 "jobs": [j.to_dict() for j in jobs],
                 "total": len(jobs)
             }
         except Exception as e:
+            logger.error(f"list_training_jobs: failed: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -319,12 +357,16 @@ def setup_mcp_server() -> FastMCP:
             Dict with job_id and deleted=True on success.
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.info(f"delete_training_job: job_or_container_id={job_or_container_id} force={force}")
         try:
             get_dock().delete_job(job_or_container_id, force=force)
+            logger.info(f"delete_training_job: job deleted job_or_container_id={job_or_container_id}")
             return {"job_id": job_or_container_id, "deleted": True}
         except ValueError as e:
+            logger.warning(f"delete_training_job: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"delete_training_job: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -346,12 +388,15 @@ def setup_mcp_server() -> FastMCP:
             Dict with job_id and checkpoints (list of checkpoint directory names).
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
+        logger.debug(f"list_training_checkpoints: job_or_container_id={job_or_container_id}")
         try:
             checkpoints = get_dock().get_checkpoints(job_or_container_id)
             return {"job_id": job_or_container_id, "checkpoints": checkpoints}
         except ValueError as e:
+            logger.warning(f"list_training_checkpoints: job not found job_or_container_id={job_or_container_id}: {e}")
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
+            logger.error(f"list_training_checkpoints: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     return mcp
@@ -377,16 +422,35 @@ Examples:
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host for streamable-http")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port for streamable-http")
     parser.add_argument("--path", default="/mcp", help="Path for streamable-http")
+    parser.add_argument("--checkpoint", default=None, help="Checkpoint directory")
+
 
     args = parser.parse_args()
 
+    # Initialize logger (use absolute path so logs work regardless of cwd)
+    if args.checkpoint:
+        logger_path = pathlib.Path(args.checkpoint).resolve() / 'logs'
+    else:
+        logger_path = pathlib.Path.cwd() / 'logs'
+
+    logger = enable_rich_logger(
+        directory=logger_path,
+        name='llama-factory-dock-mcp',
+    )
+
+    logger.info("Starting LlamaFactory Dock MCP server")
+    logger.info(f"Transport: {args.transport}")
+    logger.info(f"Log directory: {logger_path.absolute()}")
+
     try:
-        mcp = setup_mcp_server()
+        mcp = setup_mcp_server(logger=logger)
         if args.transport == "stdio":
+            logger.info("Running MCP server with stdio transport")
             mcp.run(transport="stdio", show_banner=False)
         else:
-            print(f"LlamaFactory Dock MCP server", flush=True)
-            print(f"  Host: {args.host}  Port: {args.port}  Path: {args.path}", flush=True)
+            logger.info(f"Running MCP server with streamable-http transport: {args.host}:{args.port}{args.path}")
+            # User-friendly console output
+            logger.info(f"LlamaFactory Dock MCP server listening on http://{args.host}:{args.port}{args.path}")
             mcp.run(
                 transport="streamable-http",
                 host=args.host,
@@ -394,10 +458,7 @@ Examples:
                 path=args.path,
             )
     except Exception as e:
-        import sys
-        import traceback
-        print(f"Error: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
+        logger.error(f"MCP server error: {e}", exc_info=True)
         return 1
 
     return 0
