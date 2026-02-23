@@ -62,7 +62,7 @@ class MainArgs:
             help='Logging level (default: INFO)',
         )
 
-        subparsers = parser.add_subparsers(dest='command', help='Available commands')
+        subparsers = parser.add_subparsers(dest='command', help='Available commands', required=True)
 
         # Start command
         start_parser = subparsers.add_parser('start', help='Start a training job')
