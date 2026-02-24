@@ -53,6 +53,7 @@ docker-compose.override.yml
 
 # directories
 configs/*
+examples/*
 
 # Coverage reports
 .coverage
