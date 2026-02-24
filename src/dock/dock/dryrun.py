@@ -53,15 +53,28 @@ class LlamaFactoryDryRunDock(LlamaFactoryDock):
         if isinstance(config, str):
             config = ConfigLoader.load(config)
 
+        created_at = datetime.now()
+        job_id = uuid.uuid4().hex[:8]
+
         try:
             if auto_pull:
-                self._ensure_image()
+                preparing_job = TrainingJob(
+                    job_id=job_id,
+                    container_id="",
+                    status=TrainingStatus.PULLING_IMAGE,
+                    config=config,
+                    image=self.docker_image,
+                    created_at=created_at,
+                )
+                self._preparing_jobs[job_id] = preparing_job
+                try:
+                    self._ensure_image()
+                finally:
+                    self._preparing_jobs.pop(job_id, None)
 
             temp_config_path = self._dump_temp_config(config)
             dryrun_command = self._build_dryrun_training_command()
 
-            created_at = datetime.now()
-            job_id = uuid.uuid4().hex[:8]
             labels = {
                 DOCK_LABEL_KEY: DOCK_LABEL_VALUE,
                 JOB_ID_LABEL_KEY: job_id,

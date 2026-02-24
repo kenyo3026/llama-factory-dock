@@ -29,12 +29,13 @@ JOB_ID_LABEL_KEY = "llama-factory-dock.job_id"
 @dataclass(frozen=True)
 class TrainingStatus:
     """Training job status"""
-    PENDING :str = "pending"
-    RUNNING :str = "running"
-    PAUSED :str = "paused"
-    COMPLETED :str = "completed"
-    FAILED :str = "failed"
-    STOPPED :str = "stopped"
+    PENDING: str = "pending"
+    PULLING_IMAGE: str = "pulling_image"
+    RUNNING: str = "running"
+    PAUSED: str = "paused"
+    COMPLETED: str = "completed"
+    FAILED: str = "failed"
+    STOPPED: str = "stopped"
 
 
 @dataclass
@@ -45,6 +46,7 @@ class TrainingJob:
     status: str = TrainingStatus.PENDING
     config: Optional[Dict] = None
     metrics: Optional[Dict] = None
+    image: Optional[str] = None  # Docker image used (e.g. hiyouga/llamafactory:latest)
 
     created_at: datetime = field(default_factory=datetime.now)
     started_at: Optional[datetime] = None
@@ -68,6 +70,7 @@ class TrainingJob:
             "status": self.status,
             "config": self.config,
             "metrics": self.metrics,
+            "image": self.image,
             "progress_percentage": self.get_progress_percentage(),
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             "started_at": self.started_at.isoformat() if isinstance(self.started_at, datetime) else self.started_at,
@@ -90,6 +93,9 @@ class LlamaFactoryDock:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # In-memory jobs during preparation (e.g. PULLING_IMAGE) before container exists
+        self._preparing_jobs: Dict[str, TrainingJob] = {}
+
         self.logger.info(f"LlamaFactoryDock initialized")
         self.logger.debug(f"Docker image: {self.docker_image}")
         self.logger.debug(f"Platform: {self.docker_container_platform}")
@@ -107,16 +113,29 @@ class LlamaFactoryDock:
         if isinstance(config, str):
             config = ConfigLoader.load(config)
 
+        created_at = datetime.now()
+        job_id = uuid.uuid4().hex[:8]  # Human-friendly 8-char ID
+
         try:
             if auto_pull:
-                self._ensure_image()
+                preparing_job = TrainingJob(
+                    job_id=job_id,
+                    container_id="",
+                    status=TrainingStatus.PULLING_IMAGE,
+                    config=config,
+                    image=self.docker_image,
+                    created_at=created_at,
+                )
+                self._preparing_jobs[job_id] = preparing_job
+                try:
+                    self._ensure_image()
+                finally:
+                    self._preparing_jobs.pop(job_id, None)
 
             # Prepare config file
             temp_config_path = self._dump_temp_config(config)
 
             # Prepare container labels with metadata
-            created_at = datetime.now()
-            job_id = uuid.uuid4().hex[:8]  # Human-friendly 8-char ID
             labels = {
                 DOCK_LABEL_KEY: DOCK_LABEL_VALUE,
                 JOB_ID_LABEL_KEY: job_id,
@@ -205,6 +224,8 @@ class LlamaFactoryDock:
 
     def poll(self, job_or_container_id: str) -> TrainingJob:
         """Get job status (accepts job_id or container_id)"""
+        if job_or_container_id in self._preparing_jobs:
+            return self._preparing_jobs[job_or_container_id]
         container = self._resolve_container(job_or_container_id)
         container.reload()
         return self._container_to_job(container)
@@ -221,12 +242,16 @@ class LlamaFactoryDock:
             return [f"Error getting logs: {str(e)}"]
 
     def list_jobs(self) -> List[TrainingJob]:
-        """List all training jobs by querying Docker containers"""
+        """List all training jobs by querying Docker containers and preparing jobs"""
         containers = self.docker_client.containers.list(
             all=True,
             filters={"label": f"{DOCK_LABEL_KEY}={DOCK_LABEL_VALUE}"}
         )
-        return [self._container_to_job(c) for c in containers]
+        jobs = [self._container_to_job(c) for c in containers]
+        for prep in self._preparing_jobs.values():
+            if not any(j.job_id == prep.job_id for j in jobs):
+                jobs.append(prep)
+        return jobs
 
     def delete_job(self, job_or_container_id: str, force: bool = False) -> bool:
         """Delete a training job (accepts job_id or container_id)"""
@@ -348,11 +373,22 @@ class LlamaFactoryDock:
             error_message = f"Container exited with code {exit_code}"
 
         job_id = labels.get(JOB_ID_LABEL_KEY, container.short_id)  # Prefer label, fallback to container_id
+
+        # Get image from container (Config.Image or image.tags)
+        image = None
+        try:
+            image = container.attrs.get("Config", {}).get("Image") or (
+                container.image.tags[0] if container.image.tags else None
+            )
+        except Exception:
+            pass
+
         return TrainingJob(
             job_id=job_id,
             container_id=container.short_id,
             status=status,
             config=config,
+            image=image,
             created_at=created_at,
             started_at=started_at,
             completed_at=finished_at,

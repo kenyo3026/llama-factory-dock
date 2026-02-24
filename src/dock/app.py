@@ -40,6 +40,7 @@ class JobResponse(BaseModel):
     status: str
     config: Optional[Dict] = None
     metrics: Optional[Dict] = None
+    image: Optional[str] = None
     progress_percentage: float = 0.0
     created_at: Optional[str] = None
     started_at: Optional[str] = None
