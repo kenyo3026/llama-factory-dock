@@ -5,32 +5,22 @@ Provides HTTP endpoints for training control, monitoring, and task management.
 """
 
 import argparse
+import json
 import logging
 import pathlib
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, File, Form, UploadFile
 from pydantic import BaseModel, Field
 
 from .dock import LlamaFactoryDock
+from .utils.config_handler import merge_config, parse_config_content, resolve_config
 from .utils.logger import enable_rich_logger
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3027
 
 # --- Pydantic models ---
-
-class StartRequest(BaseModel):
-    """Request model for starting a training job"""
-    config_path: Optional[str] = Field(
-        None,
-        description="Path to LlamaFactory config file (YAML/JSON)",
-    )
-    config: Optional[Dict[str, Any]] = Field(
-        None,
-        description="LlamaFactory config as dict (alternative to config_path)",
-    )
-
 
 class StopRequest(BaseModel):
     """Request model for stop/delete with force option"""
@@ -122,37 +112,65 @@ def setup_app(
 
     # --- Training control ---
     @app.post("/api/v1/training/start", response_model=JobResponse)
-    async def start_training(request: StartRequest):
+    async def start_training(
+        config_file: Optional[UploadFile] = File(None, description="YAML/JSON config file (optional). Used as base when both provided."),
+        config: Optional[str] = Form(
+            None,
+            description="Config as JSON string (optional). Overwrites same keys in config_file. Example: {\"learning_rate\": 0.001}. Leave empty if only using config_file.",
+        ),
+    ):
         """
         Start a training job.
 
-        Provide either config_path (file path) or config (dict).
+        **config_file** (optional): YAML/JSON file upload.
+        **config** (optional): Config as JSON string. Overwrites same keys in config_file.
+        At least one required. If both: file as base, config overwrites same keys.
         """
-        if request.config_path and request.config:
-            logger.warning("start_training: both config_path and config provided")
-            raise HTTPException(
-                status_code=400,
-                detail="Provide either config_path or config, not both",
-            )
-        if not request.config_path and not request.config:
-            logger.warning("start_training: neither config_path nor config provided")
-            raise HTTPException(
-                status_code=400,
-                detail="Provide config_path or config",
-            )
-
-        config: Union[str, Dict] = request.config_path or request.config
-        cfg_desc = f"config_path={request.config_path!r}" if request.config_path else "config=dict"
-        logger.info(f"start_training: starting job with {cfg_desc}")
         try:
+            base_config: Dict[str, Any] = {}
+            override_config: Dict[str, Any] = {}
+
+            if config_file and config_file.filename:
+                content = (await config_file.read()).decode("utf-8")
+                base_config = parse_config_content(content)
+                logger.info(f"start_training: config_file parsed ({config_file.filename})")
+
+            if config and config.strip():
+                try:
+                    override_config = json.loads(config)
+                except json.JSONDecodeError as e:
+                    if base_config:
+                        logger.warning(f"start_training: config field invalid JSON, ignoring (using config_file only): {e}")
+                        override_config = {}
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"config must be valid JSON object, e.g. {{\"model_name_or_path\": \"llama2\", \"dataset\": \"alpaca\"}}. Error: {e}",
+                        )
+                else:
+                    if not isinstance(override_config, dict):
+                        raise HTTPException(status_code=400, detail="config must be a JSON object")
+
+            if not base_config and not override_config:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Provide config and/or config_file (at least one required)",
+                )
+
+            config = merge_config(base_config, override_config) if base_config and override_config else (base_config or override_config)
+            config = resolve_config(config)
             dock = get_dock()
             job = dock.start(config)
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             if job.status == "failed":
                 raise HTTPException(status_code=500, detail=job.error_message or "Failed to start")
             return JobResponse(**job.to_dict())
+
         except HTTPException:
             raise
+        except ValueError as e:
+            logger.warning(f"start_training: invalid config: {e}")
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error(f"start_training: failed to start job: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
