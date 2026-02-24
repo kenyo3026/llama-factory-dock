@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Query, File, Form, UploadFile
 from pydantic import BaseModel, Field
 
-from .dock import LlamaFactoryDock
+from .dock import LlamaFactoryDock, LlamaFactoryDryRunDock
 from .utils.config_handler import merge_config, parse_config_content, resolve_config
 from .utils.logger import enable_rich_logger
 
@@ -66,38 +66,33 @@ class CheckpointsResponse(BaseModel):
 
 
 def setup_app(
-    dock_factory=None,
+    dryrun: bool = False,
+    dryrun_duration: int = 300,
     logger: Optional[logging.Logger] = None,
 ) -> FastAPI:
     """
     Create and configure FastAPI application.
 
     Args:
-        dock_factory: Optional callable that returns LlamaFactoryDock instance.
-                      Defaults to LlamaFactoryDock (real mode).
+        dryrun: Use LlamaFactoryDryRunDock (simulated training, no GPU).
+        dryrun_duration: Dryrun simulated training duration in seconds (default: 300).
         logger: Optional logger instance. Uses module logger if not provided.
 
     Returns:
         Configured FastAPI application.
     """
     logger = logger or logging.getLogger(__name__)
-    if dock_factory is None:
-        dock_factory = LlamaFactoryDock
+
+    dock: LlamaFactoryDock = (
+        LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
+        if dryrun else LlamaFactoryDock(logger=logger)
+    )
 
     app = FastAPI(
         title="LlamaFactory Dock API",
         description="API for Docker-based LlamaFactory training orchestration",
         version="0.1.0",
     )
-
-    # Lazy init: create dock on first request (avoids Docker connection at import)
-    _dock: Optional[LlamaFactoryDock] = None
-
-    def get_dock() -> LlamaFactoryDock:
-        nonlocal _dock
-        if _dock is None:
-            _dock = dock_factory() if callable(dock_factory) else dock_factory
-        return _dock
 
     # --- Health ---
     @app.get("/", response_model=HealthResponse)
@@ -159,7 +154,6 @@ def setup_app(
 
             config = merge_config(base_config, override_config) if base_config and override_config else (base_config or override_config)
             config = resolve_config(config)
-            dock = get_dock()
             job = dock.start(config)
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             if job.status == "failed":
@@ -180,7 +174,7 @@ def setup_app(
         """Stop a training job"""
         logger.info(f"stop_training: job_id={job_id} force={force}")
         try:
-            job = get_dock().stop(job_id, force=force)
+            job = dock.stop(job_id, force=force)
             logger.info(f"stop_training: job stopped job_id={job.job_id} status={job.status}")
             return JobResponse(**job.to_dict())
         except ValueError as e:
@@ -195,7 +189,7 @@ def setup_app(
         """Pause a training job"""
         logger.info(f"pause_training: job_id={job_id}")
         try:
-            job = get_dock().pause(job_id)
+            job = dock.pause(job_id)
             logger.info(f"pause_training: job paused job_id={job.job_id}")
             return JobResponse(**job.to_dict())
         except ValueError as e:
@@ -210,7 +204,7 @@ def setup_app(
         """Resume a paused training job"""
         logger.info(f"resume_training: job_id={job_id}")
         try:
-            job = get_dock().resume(job_id)
+            job = dock.resume(job_id)
             logger.info(f"resume_training: job resumed job_id={job.job_id}")
             return JobResponse(**job.to_dict())
         except ValueError as e:
@@ -226,7 +220,7 @@ def setup_app(
         """Get job status (poll)"""
         logger.debug(f"get_status: job_id={job_id}")
         try:
-            job = get_dock().poll(job_id)
+            job = dock.poll(job_id)
             return JobResponse(**job.to_dict())
         except ValueError as e:
             logger.warning(f"get_status: job not found job_id={job_id}: {e}")
@@ -243,7 +237,7 @@ def setup_app(
         """Get job logs"""
         logger.debug(f"get_logs: job_id={job_id} tail={tail}")
         try:
-            logs = get_dock().poll_logs(job_id, tail=tail)
+            logs = dock.poll_logs(job_id, tail=tail)
             return LogsResponse(job_id=job_id, logs=logs)
         except ValueError as e:
             logger.warning(f"get_logs: job not found job_id={job_id}: {e}")
@@ -257,7 +251,7 @@ def setup_app(
         """Get training progress (percentage)"""
         logger.debug(f"get_progress: job_id={job_id}")
         try:
-            job = get_dock().poll(job_id)
+            job = dock.poll(job_id)
             return {"job_id": job_id, "progress_percentage": job.get_progress_percentage()}
         except ValueError as e:
             logger.warning(f"get_progress: job not found job_id={job_id}: {e}")
@@ -272,7 +266,7 @@ def setup_app(
         """List all training jobs"""
         logger.info("list_jobs: listing all jobs")
         try:
-            jobs = get_dock().list_jobs()
+            jobs = dock.list_jobs()
             logger.info(f"list_jobs: found {len(jobs)} job(s)")
             job_responses = [JobResponse(**j.to_dict()) for j in jobs]
             return JobsListResponse(jobs=job_responses, total=len(job_responses))
@@ -288,7 +282,7 @@ def setup_app(
         """Delete a training job"""
         logger.info(f"delete_job: job_id={job_id} force={force}")
         try:
-            get_dock().delete_job(job_id, force=force)
+            dock.delete_job(job_id, force=force)
             logger.info(f"delete_job: job deleted job_id={job_id}")
             return {"job_id": job_id, "deleted": True}
         except ValueError as e:
@@ -303,7 +297,7 @@ def setup_app(
         """List checkpoints for a job"""
         logger.debug(f"get_checkpoints: job_id={job_id}")
         try:
-            checkpoints = get_dock().get_checkpoints(job_id)
+            checkpoints = dock.get_checkpoints(job_id)
             return CheckpointsResponse(job_id=job_id, checkpoints=checkpoints)
         except ValueError as e:
             logger.warning(f"get_checkpoints: job not found job_id={job_id}: {e}")
@@ -322,7 +316,8 @@ app = setup_app()
 def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    dock_factory=None,
+    dryrun: bool = False,
+    dryrun_duration: int = 300,
     logger: Optional[logging.Logger] = None,
     reload: bool = False,
 ):
@@ -332,13 +327,18 @@ def run_server(
     Args:
         host: Host to bind to
         port: Port to bind to
-        dock_factory: Optional callable returning LlamaFactoryDock (real mode by default)
+        dryrun: Use LlamaFactoryDryRunDock (simulated training, no GPU)
+        dryrun_duration: Dryrun simulated training duration in seconds (default: 300)
         logger: Optional logger instance
         reload: Enable auto-reload for development
     """
     import uvicorn
 
-    api_app = setup_app(dock_factory=dock_factory, logger=logger)
+    api_app = setup_app(
+        dryrun=dryrun,
+        dryrun_duration=dryrun_duration,
+        logger=logger,
+    )
     uvicorn.run(api_app, host=host, port=port, reload=reload)
 
 
@@ -349,7 +349,17 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     parser.add_argument("--checkpoint", default=None, help="Checkpoint directory (logs go to checkpoint/logs)")
-    parser.add_argument("--dryrun", default=None, help="")
+    parser.add_argument(
+        "--dryrun",
+        action="store_true",
+        help="Use LlamaFactoryDryRunDock (simulated training, no GPU)",
+    )
+    parser.add_argument(
+        "--dryrun-duration",
+        type=int,
+        default=300,
+        help="Dryrun simulated training duration in seconds (default: 300)",
+    )
 
     args = parser.parse_args()
 
@@ -365,6 +375,9 @@ def main() -> int:
     )
 
     logger.info("Starting LlamaFactory Dock API server")
+    logger.info(f"Mode: {'dryrun' if args.dryrun else 'normal'}")
+    if args.dryrun:
+        logger.info(f"Dryrun duration: {args.dryrun_duration}s")
     logger.info(f"Host: {args.host}:{args.port}")
     logger.info(f"Log directory: {logger_path.absolute()}")
 
@@ -372,6 +385,8 @@ def main() -> int:
         run_server(
             host=args.host,
             port=args.port,
+            dryrun=args.dryrun,
+            dryrun_duration=args.dryrun_duration,
             logger=logger,
             reload=args.reload,
         )

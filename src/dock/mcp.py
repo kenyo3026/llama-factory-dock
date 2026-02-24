@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any
 
 from fastmcp import FastMCP
 
-from .dock import LlamaFactoryDock
+from .dock import LlamaFactoryDock, LlamaFactoryDryRunDock
 from .utils.config_handler import resolve_config
 from .utils.logger import enable_rich_logger
 
@@ -34,20 +34,10 @@ LlamaFactory is a well-known unified framework for efficient LLM fine-tuning, su
 **Available Operations**: start, stop, pause, and resume training jobs. Each job runs in an isolated Docker container.
 """
 
-# Lazy init: create dock on first tool call
-_dock: Optional[LlamaFactoryDock] = None
-
-
-def get_dock() -> LlamaFactoryDock:
-    """Get dock instance (lazy init)"""
-    global _dock
-    if _dock is None:
-        _dock = LlamaFactoryDock()
-    return _dock
-
-
 def setup_mcp_server(
     logger: Optional[logging.Logger] = None,
+    dryrun: bool = False,
+    dryrun_duration: int = 300,
 ) -> FastMCP:
     """
     Create and configure FastMCP server for LlamaFactory Dock.
@@ -56,6 +46,11 @@ def setup_mcp_server(
         Configured FastMCP server instance.
     """
     logger = logger or logging.getLogger(__name__)
+
+    dock: LlamaFactoryDock = (
+        LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
+        if dryrun else LlamaFactoryDock(logger=logger)
+    )
 
     mcp = FastMCP(
         name=MCP_NAME,
@@ -86,7 +81,7 @@ def setup_mcp_server(
         try:
             resolved = resolve_config(config)
             logger.info("start_training: starting job with config=dict")
-            job = get_dock().start(resolved)
+            job = dock.start(resolved)
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             return job.to_dict()
         except ValueError as e:
@@ -121,7 +116,7 @@ def setup_mcp_server(
         """
         logger.info(f"stop_training: job_or_container_id={job_or_container_id} force={force}")
         try:
-            job = get_dock().stop(job_or_container_id, force=force)
+            job = dock.stop(job_or_container_id, force=force)
             logger.info(f"stop_training: job stopped job_id={job.job_id} status={job.status}")
             return job.to_dict()
         except ValueError as e:
@@ -153,7 +148,7 @@ def setup_mcp_server(
         """
         logger.info(f"pause_training: job_or_container_id={job_or_container_id}")
         try:
-            job = get_dock().pause(job_or_container_id)
+            job = dock.pause(job_or_container_id)
             logger.info(f"pause_training: job paused job_id={job.job_id}")
             return job.to_dict()
         except ValueError as e:
@@ -185,7 +180,7 @@ def setup_mcp_server(
         """
         logger.info(f"resume_training: job_or_container_id={job_or_container_id}")
         try:
-            job = get_dock().resume(job_or_container_id)
+            job = dock.resume(job_or_container_id)
             logger.info(f"resume_training: job resumed job_id={job.job_id}")
             return job.to_dict()
         except ValueError as e:
@@ -218,7 +213,7 @@ def setup_mcp_server(
         """
         logger.debug(f"get_training_status: job_or_container_id={job_or_container_id}")
         try:
-            job = get_dock().poll(job_or_container_id)
+            job = dock.poll(job_or_container_id)
             return job.to_dict()
         except ValueError as e:
             logger.warning(f"get_training_status: job not found job_or_container_id={job_or_container_id}: {e}")
@@ -252,7 +247,7 @@ def setup_mcp_server(
             if tail < 1 or tail > 10000:
                 logger.warning(f"get_training_logs: invalid tail={tail}")
                 return {"error": "tail must be between 1 and 10000", "status": "invalid_param"}
-            logs = get_dock().poll_logs(job_or_container_id, tail=tail)
+            logs = dock.poll_logs(job_or_container_id, tail=tail)
             return {"job_id": job_or_container_id, "logs": logs}
         except ValueError as e:
             logger.warning(f"get_training_logs: job not found job_or_container_id={job_or_container_id}: {e}")
@@ -282,7 +277,7 @@ def setup_mcp_server(
         """
         logger.debug(f"get_training_progress: job_or_container_id={job_or_container_id}")
         try:
-            job = get_dock().poll(job_or_container_id)
+            job = dock.poll(job_or_container_id)
             return {
                 "job_id": job_or_container_id,
                 "progress_percentage": job.get_progress_percentage()
@@ -312,7 +307,7 @@ def setup_mcp_server(
         """
         logger.info("list_training_jobs: listing all jobs")
         try:
-            jobs = get_dock().list_jobs()
+            jobs = dock.list_jobs()
             logger.info(f"list_training_jobs: found {len(jobs)} job(s)")
             return {
                 "jobs": [j.to_dict() for j in jobs],
@@ -348,7 +343,7 @@ def setup_mcp_server(
         """
         logger.info(f"delete_training_job: job_or_container_id={job_or_container_id} force={force}")
         try:
-            get_dock().delete_job(job_or_container_id, force=force)
+            dock.delete_job(job_or_container_id, force=force)
             logger.info(f"delete_training_job: job deleted job_or_container_id={job_or_container_id}")
             return {"job_id": job_or_container_id, "deleted": True}
         except ValueError as e:
@@ -379,7 +374,7 @@ def setup_mcp_server(
         """
         logger.debug(f"list_training_checkpoints: job_or_container_id={job_or_container_id}")
         try:
-            checkpoints = get_dock().get_checkpoints(job_or_container_id)
+            checkpoints = dock.get_checkpoints(job_or_container_id)
             return {"job_id": job_or_container_id, "checkpoints": checkpoints}
         except ValueError as e:
             logger.warning(f"list_training_checkpoints: job not found job_or_container_id={job_or_container_id}: {e}")
@@ -412,7 +407,17 @@ Examples:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port for streamable-http")
     parser.add_argument("--path", default="/mcp", help="Path for streamable-http")
     parser.add_argument("--checkpoint", default=None, help="Checkpoint directory")
-
+    parser.add_argument(
+        "--dryrun",
+        action="store_true",
+        help="Use LlamaFactoryDryRunDock (simulated training, no GPU)",
+    )
+    parser.add_argument(
+        "--dryrun-duration",
+        type=int,
+        default=300,
+        help="Dryrun simulated training duration in seconds (default: 300)",
+    )
 
     args = parser.parse_args()
 
@@ -428,11 +433,18 @@ Examples:
     )
 
     logger.info("Starting LlamaFactory Dock MCP server")
+    logger.info(f"Mode: {'dryrun' if args.dryrun else 'normal'}")
+    if args.dryrun:
+        logger.info(f"Dryrun duration: {args.dryrun_duration}s")
     logger.info(f"Transport: {args.transport}")
     logger.info(f"Log directory: {logger_path.absolute()}")
 
     try:
-        mcp = setup_mcp_server(logger=logger)
+        mcp = setup_mcp_server(
+            logger=logger,
+            dryrun=args.dryrun,
+            dryrun_duration=args.dryrun_duration,
+        )
         if args.transport == "stdio":
             logger.info("Running MCP server with stdio transport")
             mcp.run(transport="stdio", show_banner=False)
