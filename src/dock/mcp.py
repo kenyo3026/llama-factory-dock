@@ -7,11 +7,12 @@ Provides MCP tools for training control: start, stop, pause, resume.
 import argparse
 import logging
 import pathlib
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 
 from fastmcp import FastMCP
 
 from .dock import LlamaFactoryDock
+from .utils.config_handler import resolve_config
 from .utils.logger import enable_rich_logger
 
 
@@ -25,9 +26,9 @@ MCP_INSTRUCTION = """MCP server for LlamaFactory training orchestration.
 LlamaFactory is a well-known unified framework for efficient LLM fine-tuning, supporting various models and training methods.
 
 **Key Points**:
-- All training configurations follow LlamaFactory's native YAML/JSON format
-- The `config` parameter in `start_training` accepts standard LlamaFactory configuration dictionaries
-- If you're familiar with LlamaFactory, use the same parameter names and structure you would use with `llamafactory-cli train`
+- All training configurations follow LlamaFactory's native format
+- The `config` parameter in `start_training` accepts a dictionary (JSON object) with LlamaFactory config
+- Use the same parameter names and structure as LlamaFactory YAML config
 - Common LlamaFactory parameters include: model_name_or_path, dataset, stage (pt/sft/rm/ppo/dpo/kto), learning_rate, num_train_epochs, per_device_train_batch_size, etc.
 
 **Available Operations**: start, stop, pause, and resume training jobs. Each job runs in an isolated Docker container.
@@ -62,18 +63,12 @@ def setup_mcp_server(
     )
 
     @mcp.tool()
-    def start_training(
-        config_path: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> dict:
+    def start_training(config: Dict[str, Any]) -> dict:
         """
         Start a new LlamaFactory training job in a Docker container.
 
-        **Usage**: Provide EITHER config_path (path to file) OR config (dict), not both.
-
-        **Config Format**: Must follow LlamaFactory's standard configuration format.
-        - For file: Accepts YAML (.yaml/.yml) or JSON (.json) files
-        - For dict: Use the same keys as LlamaFactory's native YAML config
+        **Config Format**: LlamaFactory config as a dictionary (JSON object).
+        Use the same keys as LlamaFactory's native YAML config.
 
         **Configuration Tips**:
         - Use standard LlamaFactory parameter names (model_name_or_path, dataset, stage, etc.)
@@ -82,27 +77,21 @@ def setup_mcp_server(
         - Supports various finetuning methods: lora, full, freeze, etc.
 
         Args:
-            config_path: Path to LlamaFactory config file (YAML/JSON). Mutually exclusive with `config`.
-            config: LlamaFactory config as dictionary. Mutually exclusive with `config_path`.
+            config: LlamaFactory config as dictionary. Same structure as LlamaFactory YAML config.
 
         Returns:
             Job info dict with job_id (8 chars), container_id (12 chars), status, config, timestamps.
             Returns {"error": "...", "status": "failed"} on failure.
         """
-        if config_path and config:
-            logger.warning("start_training: both config_path and config provided")
-            return {"error": "Provide either config_path or config, not both"}
-        if not config_path and not config:
-            logger.warning("start_training: neither config_path nor config provided")
-            return {"error": "Provide config_path or config"}
-
-        cfg: Union[str, Dict] = config_path or config
-        cfg_desc = f"config_path={config_path!r}" if config_path else "config=dict"
-        logger.info(f"start_training: starting job with {cfg_desc}")
         try:
-            job = get_dock().start(cfg)
+            resolved = resolve_config(config)
+            logger.info("start_training: starting job with config=dict")
+            job = get_dock().start(resolved)
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             return job.to_dict()
+        except ValueError as e:
+            logger.warning(f"start_training: invalid config: {e}")
+            return {"error": str(e), "status": "failed"}
         except Exception as e:
             logger.error(f"start_training: failed to start job: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
