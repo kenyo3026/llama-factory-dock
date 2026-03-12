@@ -16,6 +16,8 @@ from .utils.loader import ConfigLoader
 DOCKER_IMAGE: str = "hiyouga/llamafactory:latest"
 DOCKER_CONTAINER_PLATFORM: str = "linux/amd64"  # Force x86_64 on ARM64 (slower but works)
 DOCKER_CONTAINER_ROOT: str = "/app/data"
+DOCKER_CONTAINER_GPU_REQUEST = [docker.types.DeviceRequest(device_ids=['4', '5'], capabilities=[['gpu']])]
+DOCKER_CONTAINER_SHM_SIZE: str = "8g"
 
 PROJECT_ROOT = pathlib.Path(os.getcwd())
 DATA_DIR: pathlib.Path = PROJECT_ROOT / "data"
@@ -164,13 +166,8 @@ class LlamaFactoryDock:
                     str(self.output_dir): {"bind": f"{self.docker_container_root}/outputs", "mode": "rw"},
                     str(temp_config_path.parent): {"bind": f"{self.docker_container_root}/temp_configs", "mode": "ro"},
                 },
-                device_requests=[
-                    docker.types.DeviceRequest(
-                        device_ids=[str(i) for i in config.get('gpu_ids', [])] if config.get('gpu_ids') else None,
-                        count=-1 if not config.get('gpu_ids') else len(config.get('gpu_ids', [])),
-                        capabilities=[['gpu']]
-                    )
-                ],
+                shm_size=DOCKER_CONTAINER_SHM_SIZE,
+                device_requests=DOCKER_CONTAINER_GPU_REQUEST,
                 detach=True,
                 name=container_name,
                 labels=labels,
