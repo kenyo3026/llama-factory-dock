@@ -13,15 +13,22 @@ import docker
 from .utils.loader import ConfigLoader
 
 
+PROJECT_ROOT = pathlib.Path(os.getcwd())
+DATASET_DIR: pathlib.Path = PROJECT_ROOT / "datasets"
+RECIPE_DIR: pathlib.Path = PROJECT_ROOT / "recipes"
+OUTPUT_DIR: pathlib.Path = PROJECT_ROOT / "outputs"
+
 DOCKER_IMAGE: str = "hiyouga/llamafactory:latest"
 DOCKER_CONTAINER_PLATFORM: str = "linux/amd64"  # Force x86_64 on ARM64 (slower but works)
-DOCKER_CONTAINER_ROOT: str = "/app/data"
 DOCKER_CONTAINER_GPU_REQUEST = [docker.types.DeviceRequest(device_ids=['4', '5'], capabilities=[['gpu']])]
 DOCKER_CONTAINER_SHM_SIZE: str = "8g"
 
-PROJECT_ROOT = pathlib.Path(os.getcwd())
-DATA_DIR: pathlib.Path = PROJECT_ROOT / "data"
-OUTPUT_DIR: pathlib.Path = PROJECT_ROOT / "output"
+DOCKER_CONTAINER_ROOT: pathlib.Path = pathlib.Path("/app")
+DOCKER_CONTAINER_VOLUME_MAP: dict = {
+    str(DATASET_DIR): {"bind": str(DOCKER_CONTAINER_ROOT / "datasets"), "mode": "ro"},
+    str(RECIPE_DIR): {"bind": str(DOCKER_CONTAINER_ROOT / "examples"), "mode": "ro"},
+    str(OUTPUT_DIR): {"bind": str(DOCKER_CONTAINER_ROOT / "outputs"), "mode": "rw"},
+}
 
 # Label for identifying our containers
 DOCK_LABEL_KEY = "llama-factory-dock.managed"
@@ -90,12 +97,13 @@ class LlamaFactoryDock:
         self.docker_image = DOCKER_IMAGE
         self.docker_container_platform = DOCKER_CONTAINER_PLATFORM
         self.docker_container_root = DOCKER_CONTAINER_ROOT
-        self.data_dir = pathlib.Path(DATA_DIR)
-        self.output_dir = pathlib.Path(OUTPUT_DIR)
+        self.dataset_dir = DATASET_DIR
+        self.recipe_dir = RECIPE_DIR
+        self.output_dir = OUTPUT_DIR
 
-        # Create directories if they don't exist
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Create host directories if they don't exist
+        for d in (self.dataset_dir, self.recipe_dir, self.output_dir):
+            d.mkdir(parents=True, exist_ok=True)
 
         # In-memory jobs during preparation (e.g. PULLING_IMAGE) before container exists
         self._preparing_jobs: Dict[str, TrainingJob] = {}
@@ -103,7 +111,8 @@ class LlamaFactoryDock:
         self.logger.info(f"LlamaFactoryDock initialized")
         self.logger.debug(f"Docker image: {self.docker_image}")
         self.logger.debug(f"Platform: {self.docker_container_platform}")
-        self.logger.debug(f"Data directory: {self.data_dir}")
+        self.logger.debug(f"Dataset directory: {self.dataset_dir}")
+        self.logger.debug(f"Recipe directory: {self.recipe_dir}")
         self.logger.debug(f"Output directory: {self.output_dir}")
 
     def start(
@@ -152,7 +161,7 @@ class LlamaFactoryDock:
 
             self.logger.info(f"Starting container: {container_name}")
             self.logger.debug(f"Job ID: {job_id}")
-            self.logger.debug(f"Volumes: data={self.data_dir}, output={self.output_dir}")
+            self.logger.debug(f"Volumes: dataset={self.dataset_dir}, recipe={self.recipe_dir}, output={self.output_dir}")
 
             # Start Docker container
             container = self.docker_client.containers.run(
@@ -164,9 +173,8 @@ class LlamaFactoryDock:
                     *self._build_override_args(override_config),
                 ],
                 volumes={
-                    str(self.data_dir): {"bind": f"{self.docker_container_root}/datasets", "mode": "ro"},
-                    str(self.output_dir): {"bind": f"{self.docker_container_root}/outputs", "mode": "rw"},
-                    str(temp_config_path.parent): {"bind": f"{self.docker_container_root}/temp_configs", "mode": "ro"},
+                    **DOCKER_CONTAINER_VOLUME_MAP,
+                    str(temp_config_path.parent): {"bind": str(DOCKER_CONTAINER_ROOT / "temp_configs"), "mode": "ro"},
                 },
                 shm_size=DOCKER_CONTAINER_SHM_SIZE,
                 device_requests=DOCKER_CONTAINER_GPU_REQUEST,
