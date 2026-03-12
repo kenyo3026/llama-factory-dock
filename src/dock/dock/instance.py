@@ -15,6 +15,7 @@ from .utils.loader import ConfigLoader
 
 DOCKER_IMAGE: str = "hiyouga/llamafactory:latest"
 DOCKER_CONTAINER_PLATFORM: str = "linux/amd64"  # Force x86_64 on ARM64 (slower but works)
+DOCKER_CONTAINER_ROOT: str = "/app/data"
 
 PROJECT_ROOT = pathlib.Path(os.getcwd())
 DATA_DIR: pathlib.Path = PROJECT_ROOT / "data"
@@ -86,6 +87,7 @@ class LlamaFactoryDock:
         self.docker_client = docker.from_env()
         self.docker_image = DOCKER_IMAGE
         self.docker_container_platform = DOCKER_CONTAINER_PLATFORM
+        self.docker_container_root = DOCKER_CONTAINER_ROOT
         self.data_dir = pathlib.Path(DATA_DIR)
         self.output_dir = pathlib.Path(OUTPUT_DIR)
 
@@ -155,12 +157,12 @@ class LlamaFactoryDock:
                 platform=self.docker_container_platform,
                 command=[
                     "llamafactory-cli", "train",
-                    f"/app/configs/{temp_config_path.name}"
+                    f"{self.docker_container_root}/temp_configs/{temp_config_path.name}"
                 ],
                 volumes={
-                    str(self.data_dir): {"bind": "/app/data", "mode": "ro"},
-                    str(self.output_dir): {"bind": "/app/output", "mode": "rw"},
-                    str(temp_config_path.parent): {"bind": "/app/configs", "mode": "ro"},
+                    str(self.data_dir): {"bind": f"{self.docker_container_root}/datasets", "mode": "ro"},
+                    str(self.output_dir): {"bind": f"{self.docker_container_root}/outputs", "mode": "rw"},
+                    str(temp_config_path.parent): {"bind": f"{self.docker_container_root}/temp_configs", "mode": "ro"},
                 },
                 device_requests=[
                     docker.types.DeviceRequest(
