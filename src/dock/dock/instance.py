@@ -108,8 +108,9 @@ class LlamaFactoryDock:
 
     def start(
         self,
-        config: Union[None, str, pathlib.Path, Dict[str, Any]],
+        config: Union[None, str, pathlib.Path] = None,
         auto_pull: bool = True,
+        **override_config,
     ) -> TrainingJob:
         """Start a training job"""
         self.logger.info(f"Starting training job with config type: {type(config).__name__}")
@@ -159,7 +160,8 @@ class LlamaFactoryDock:
                 platform=self.docker_container_platform,
                 command=[
                     "llamafactory-cli", "train",
-                    f"{self.docker_container_root}/temp_configs/{temp_config_path.name}"
+                    f"{self.docker_container_root}/temp_configs/{temp_config_path.name}",
+                    *self._build_override_args(override_config),
                 ],
                 volumes={
                     str(self.data_dir): {"bind": f"{self.docker_container_root}/datasets", "mode": "ro"},
@@ -408,6 +410,20 @@ class LlamaFactoryDock:
                 self.logger.debug(f"Image ID: {image.id}")
             except Exception as pull_error:
                 raise RuntimeError(f"Failed to pull Docker image {self.docker_image}: {pull_error}") from pull_error
+
+    @staticmethod
+    def _build_override_args(overrides: Dict[str, Any]) -> List[str]:
+        """Convert override dict to KEY=VALUE CLI args compatible with OmegaConf parsing.
+
+        Boolean values are explicitly lowercased to match YAML semantics
+        (e.g. True -> 'true'), since OmegaConf.from_cli() uses YAML-style parsing.
+        """
+        def _fmt(v: Any) -> str:
+            if isinstance(v, bool):
+                return "true" if v else "false"
+            return str(v)
+
+        return [f"{k}={_fmt(v)}" for k, v in overrides.items()]
 
     def _dump_temp_config(self, config: Dict[str, Any]) -> pathlib.Path:
         """Dump temporary YAML config file"""
