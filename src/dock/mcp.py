@@ -375,11 +375,13 @@ def setup_mcp_server(
     @mcp.tool()
     def get_training_progress(job_or_container_id: str) -> dict:
         """
-        Get training progress percentage for a job.
+        [NOT IMPLEMENTED] Get training progress percentage for a job.
 
-        **Use Case**: Quick check of how far training has progressed.
+        **WARNING: This tool is not yet functional. Do NOT use this tool.**
+        - progress_percentage always returns 0.0 (metrics parsing is not implemented)
+        - Use `get_training_logs` instead to check actual training progress, epoch/step info, and errors.
 
-        **Progress Calculation**:
+        **Progress Calculation** (planned, not yet working):
         - Based on current_step / total_steps from training metrics
         - Returns 0.0 if metrics not available yet
         - Returns 100.0 when training completes
@@ -388,7 +390,7 @@ def setup_mcp_server(
             job_or_container_id: Either job ID (8 chars) or container ID (12 chars)
 
         Returns:
-            Dict with job_id and progress_percentage (0.0-100.0).
+            Dict with job_id and progress_percentage (always 0.0 until implemented).
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
         logger.debug(f"get_training_progress: job_or_container_id={job_or_container_id}")
