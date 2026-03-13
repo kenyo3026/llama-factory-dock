@@ -31,16 +31,25 @@ LlamaFactory is a well-known unified framework for efficient LLM fine-tuning, su
 - Use the same parameter names and structure as LlamaFactory YAML config
 - Common LlamaFactory parameters include: model_name_or_path, dataset, stage (pt/sft/rm/ppo/dpo/kto), learning_rate, num_train_epochs, per_device_train_batch_size, etc.
 
-**Available Operations**: start, stop, pause, and resume training jobs. Each job runs in an isolated Docker container.
+**Recommended Workflow**:
+1. Call `get_train_help` to discover all available parameters for the current LlamaFactory version
+2. Construct a config dict using valid parameter names from the help output
+3. Call `start_training` with the config
+
+**Available Operations**: get train help, start, stop, pause, resume, and monitor training jobs. Each job runs in an isolated Docker container.
 """
 
 def setup_mcp_server(
     logger: Optional[logging.Logger] = None,
     dryrun: bool = False,
     dryrun_duration: int = 300,
+    prefetch_on_startup: bool = True,
 ) -> FastMCP:
     """
     Create and configure FastMCP server for LlamaFactory Dock.
+
+    Args:
+        prefetch_on_startup: If True, prefetch train help at startup to warm the cache.
 
     Returns:
         Configured FastMCP server instance.
@@ -51,6 +60,10 @@ def setup_mcp_server(
         LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
         if dryrun else LlamaFactoryDock(logger=logger)
     )
+
+    if prefetch_on_startup:
+        logger.info("Prefetching train help at startup...")
+        dock.prefetch_train_help()
 
     mcp = FastMCP(
         name=MCP_NAME,
@@ -381,6 +394,31 @@ def setup_mcp_server(
             return {"error": str(e), "status": "not_found"}
         except Exception as e:
             logger.error(f"list_training_checkpoints: failed job_or_container_id={job_or_container_id}: {e}", exc_info=True)
+            return {"error": str(e), "status": "failed"}
+
+    @mcp.tool()
+    def get_training_help() -> dict:
+        """
+        Get llamafactory-cli train --help output from the current Docker image.
+
+        **Use Case**: Discover all available training parameters, their types, defaults, and
+        descriptions for the current LlamaFactory version. Call this before constructing a
+        training config to ensure you are using valid parameter names.
+
+        **Performance**: Result is cached by image digest (in-memory + file). The first call
+        may take 30-60 seconds; subsequent calls return instantly from cache.
+
+        Returns:
+            Dict with "help_text" (str) containing the full train --help output.
+            Returns {"error": "...", "status": "failed"} on failure.
+        """
+        logger.info("get_training_help: fetching train help")
+        try:
+            help_text = dock.get_train_help()
+            logger.info("get_training_help: success")
+            return {"help_text": help_text}
+        except Exception as e:
+            logger.error(f"get_training_help: failed: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     return mcp
