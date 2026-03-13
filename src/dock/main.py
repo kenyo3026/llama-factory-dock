@@ -30,8 +30,10 @@ class MainArgs:
     job_or_container_id: str = None
     force: bool = False
 
-    # Command type
+    # Command group (e.g. "train")
     command: str = None
+    # Subcommand within the group (e.g. "start", "stop", "help")
+    subcommand: str = None
 
     # Logs
     tail: int = 100
@@ -62,50 +64,58 @@ class MainArgs:
             help='Logging level (default: INFO)',
         )
 
-        subparsers = parser.add_subparsers(dest='command', help='Available commands', required=True)
+        subparsers = parser.add_subparsers(dest='command', help='Available command groups', required=True)
 
-        # Start command
-        start_parser = subparsers.add_parser('start', help='Start a training job')
+        # --- train group ---
+        train_parser = subparsers.add_parser('train', help='Training commands')
+        train_sub = train_parser.add_subparsers(dest='subcommand', help='Training subcommands', required=True)
+
+        id_help = "Job ID or container ID"
+
+        # train start
+        start_parser = train_sub.add_parser('start', help='Start a training job')
         start_parser.add_argument(
             '-c', '--config',
             required=True,
             help='Path to LlamaFactory config file (YAML/JSON)'
         )
 
-        id_help = "Job ID or container ID"
-        # Stop command
-        stop_parser = subparsers.add_parser('stop', help='Stop a training job')
+        # train stop
+        stop_parser = train_sub.add_parser('stop', help='Stop a training job')
         stop_parser.add_argument('job_or_container_id', help=id_help)
         stop_parser.add_argument('-f', '--force', action='store_true', help='Force stop (minimal wait, like kill)')
 
-        # Pause command
-        pause_parser = subparsers.add_parser('pause', help='Pause a training job')
+        # train pause
+        pause_parser = train_sub.add_parser('pause', help='Pause a training job')
         pause_parser.add_argument('job_or_container_id', help=id_help)
 
-        # Resume command
-        resume_parser = subparsers.add_parser('resume', help='Resume a paused training job')
+        # train resume
+        resume_parser = train_sub.add_parser('resume', help='Resume a paused training job')
         resume_parser.add_argument('job_or_container_id', help=id_help)
 
-        # Poll command
-        status_parser = subparsers.add_parser('status', help='Get job status')
+        # train status
+        status_parser = train_sub.add_parser('status', help='Get job status')
         status_parser.add_argument('job_or_container_id', help=id_help)
 
-        # List command
-        list_parser = subparsers.add_parser('list', help='List all jobs')
+        # train list
+        train_sub.add_parser('list', help='List all jobs')
 
-        # Logs command
-        logs_parser = subparsers.add_parser('logs', help='Show job logs')
+        # train logs
+        logs_parser = train_sub.add_parser('logs', help='Show job logs')
         logs_parser.add_argument('job_or_container_id', help=id_help)
         logs_parser.add_argument('--tail', type=int, default=cls.tail, help='Number of lines')
 
-        # Delete command
-        delete_parser = subparsers.add_parser('delete', help='Delete a training job')
+        # train delete
+        delete_parser = train_sub.add_parser('delete', help='Delete a training job')
         delete_parser.add_argument('job_or_container_id', help=id_help)
         delete_parser.add_argument('-f', '--force', action='store_true', help='Force remove (kill if running, like docker rm -f)')
 
-        # Checkpoints command
-        checkpoints_parser = subparsers.add_parser('checkpoints', help='List checkpoints for a job')
+        # train checkpoints
+        checkpoints_parser = train_sub.add_parser('checkpoints', help='List checkpoints for a job')
         checkpoints_parser.add_argument('job_or_container_id', help=id_help)
+
+        # train help
+        train_sub.add_parser('help', help='Show llamafactory-cli train --help from the Docker image')
 
         args = parser.parse_args()
 
@@ -146,30 +156,36 @@ class Main:
 
         # Route to command handlers
         cli_cmd = getattr(cls, 'cli_command', 'dock')
-        if args.command == 'start':
-            return cls.cmd_start(dock, args, cli_command=cli_cmd)
-        elif args.command == 'stop':
-            return cls.cmd_stop(dock, args)
-        elif args.command == 'pause':
-            return cls.cmd_pause(dock, args)
-        elif args.command == 'resume':
-            return cls.cmd_resume(dock, args)
-        elif args.command == 'status':
-            return cls.cmd_status(dock, args)
-        elif args.command == 'list':
-            return cls.cmd_list(dock, args)
-        elif args.command == 'logs':
-            return cls.cmd_logs(dock, args)
-        elif args.command == 'delete':
-            return cls.cmd_delete(dock, args)
-        elif args.command == 'checkpoints':
-            return cls.cmd_checkpoints(dock, args)
+        if args.command == 'train':
+            if args.subcommand == 'start':
+                return cls.cmd_training_start(dock, args, cli_command=cli_cmd)
+            elif args.subcommand == 'stop':
+                return cls.cmd_training_stop(dock, args)
+            elif args.subcommand == 'pause':
+                return cls.cmd_training_pause(dock, args)
+            elif args.subcommand == 'resume':
+                return cls.cmd_training_resume(dock, args)
+            elif args.subcommand == 'status':
+                return cls.cmd_training_status(dock, args)
+            elif args.subcommand == 'list':
+                return cls.cmd_training_list(dock, args)
+            elif args.subcommand == 'logs':
+                return cls.cmd_training_logs(dock, args)
+            elif args.subcommand == 'delete':
+                return cls.cmd_training_delete(dock, args)
+            elif args.subcommand == 'checkpoints':
+                return cls.cmd_training_checkpoints(dock, args)
+            elif args.subcommand == 'help':
+                return cls.cmd_training_help(dock, args)
+            else:
+                console.print("[red]Unknown train subcommand[/red]")
+                return 1
         else:
-            console.print("[red]Unknown command[/red]")
+            console.print("[red]Unknown command group[/red]")
             return 1
 
     @staticmethod
-    def cmd_start(dock: LlamaFactoryDock, args, *, cli_command: str = "dock") -> int:
+    def cmd_training_start(dock: LlamaFactoryDock, args, *, cli_command: str = "dock") -> int:
         """Start a training job"""
         try:
             console.print(f"[yellow]Starting training job with config: {args.config}[/yellow]")
@@ -187,10 +203,10 @@ class Main:
 
             # Helpful next steps (use correct CLI command for current mode)
             console.print(f"\n[bold]Next steps:[/bold]")
-            console.print(f"  • View logs:   [cyan]{cli_command} logs {job.job_id}[/cyan]")
-            console.print(f"  • Check status: [cyan]{cli_command} status {job.job_id}[/cyan]")
-            console.print(f"  • List all jobs: [cyan]{cli_command} list[/cyan]")
-            console.print(f"  • Stop training: [cyan]{cli_command} stop {job.job_id}[/cyan]\n")
+            console.print(f"  • View logs:    [cyan]{cli_command} train logs {job.job_id}[/cyan]")
+            console.print(f"  • Check status: [cyan]{cli_command} train status {job.job_id}[/cyan]")
+            console.print(f"  • List all jobs: [cyan]{cli_command} train list[/cyan]")
+            console.print(f"  • Stop training: [cyan]{cli_command} train stop {job.job_id}[/cyan]\n")
 
             return 0
 
@@ -199,7 +215,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_stop(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_stop(dock: LlamaFactoryDock, args) -> int:
         """Stop a training job"""
         try:
             job = dock.stop(args.job_or_container_id, force=getattr(args, 'force', False))
@@ -212,7 +228,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_pause(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_pause(dock: LlamaFactoryDock, args) -> int:
         """Pause a training job"""
         try:
             job = dock.pause(args.job_or_container_id)
@@ -225,7 +241,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_resume(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_resume(dock: LlamaFactoryDock, args) -> int:
         """Resume a training job"""
         try:
             job = dock.resume(args.job_or_container_id)
@@ -238,7 +254,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_status(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_status(dock: LlamaFactoryDock, args) -> int:
         """Get job status"""
         try:
             job = dock.poll(args.job_or_container_id)
@@ -261,7 +277,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_list(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_list(dock: LlamaFactoryDock, args) -> int:
         """List all jobs"""
         jobs = dock.list_jobs()
 
@@ -291,7 +307,7 @@ class Main:
         return 0
 
     @staticmethod
-    def cmd_logs(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_logs(dock: LlamaFactoryDock, args) -> int:
         """Show job logs"""
         try:
             logs = dock.poll_logs(args.job_or_container_id, tail=args.tail)
@@ -306,7 +322,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_delete(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_delete(dock: LlamaFactoryDock, args) -> int:
         """Delete a training job"""
         try:
             dock.delete_job(args.job_or_container_id, force=getattr(args, 'force', False))
@@ -317,7 +333,7 @@ class Main:
             return 1
 
     @staticmethod
-    def cmd_checkpoints(dock: LlamaFactoryDock, args) -> int:
+    def cmd_training_checkpoints(dock: LlamaFactoryDock, args) -> int:
         """List checkpoints for a job"""
         try:
             checkpoints = dock.get_checkpoints(args.job_or_container_id)
@@ -330,6 +346,19 @@ class Main:
             for checkpoint in checkpoints:
                 console.print(f"  • {checkpoint}")
 
+            return 0
+        except Exception as e:
+            console.print(f"[red]❌ Error: {e}[/red]")
+            return 1
+
+
+    @staticmethod
+    def cmd_training_help(dock: LlamaFactoryDock, args) -> int:
+        """Show llamafactory-cli train --help from the Docker image"""
+        try:
+            console.print("[yellow]Fetching train help from Docker image...[/yellow]")
+            help_text = dock.get_train_help()
+            console.print(help_text, highlight=False)
             return 0
         except Exception as e:
             console.print(f"[red]❌ Error: {e}[/red]")
