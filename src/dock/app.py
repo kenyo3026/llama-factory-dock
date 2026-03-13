@@ -10,7 +10,7 @@ import json
 import logging
 import pathlib
 from contextlib import asynccontextmanager
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 
 from fastapi import FastAPI, HTTPException, Query, File, Form, UploadFile
 from pydantic import BaseModel, Field
@@ -78,6 +78,7 @@ def setup_app(
     dryrun_duration: int = 300,
     logger: Optional[logging.Logger] = None,
     prefetch_on_startup: bool = True,
+    default_config: Optional[Union[str, pathlib.Path]] = None,
 ) -> FastAPI:
     """
     Create and configure FastAPI application.
@@ -87,11 +88,15 @@ def setup_app(
         dryrun_duration: Dryrun simulated training duration in seconds (default: 300).
         logger: Optional logger instance. Uses module logger if not provided.
         prefetch_on_startup: If True, prefetch train help during lifespan startup.
+        default_config: Default config file path used as base when start_training is called without a config.
 
     Returns:
         Configured FastAPI application.
     """
     logger = logger or logging.getLogger(__name__)
+
+    if default_config is not None and not pathlib.Path(default_config).exists():
+        raise FileNotFoundError(f"Default config file not found: {default_config}")
 
     dock: LlamaFactoryDock = (
         LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
@@ -127,53 +132,59 @@ def setup_app(
     # --- Training control ---
     @app.post("/api/v1/training/start", response_model=JobResponse)
     async def start_training(
-        config_file: Optional[UploadFile] = File(None, description="YAML/JSON config file (optional). Used as base when both provided."),
-        config: Optional[str] = Form(
+        config: Optional[UploadFile] = File(None, description="YAML/JSON config file (optional). Overrides recipe when provided."),
+        override_config: Optional[str] = Form(
             None,
-            description="Config as JSON string (optional). Overwrites same keys in config_file. Example: {\"learning_rate\": 0.001}. Leave empty if only using config_file.",
+            description="Override config as JSON string (optional). Overwrites same keys in config/recipe. Example: {\"learning_rate\": 0.001}.",
         ),
     ):
         """
         Start a training job.
 
-        **config_file** (optional): YAML/JSON file upload.
-        **config** (optional): Config as JSON string. Overwrites same keys in config_file.
-        At least one required. If both: file as base, config overwrites same keys.
+        **config** (optional): YAML/JSON file upload. Overrides recipe when provided.
+        **override_config** (optional): Override config as JSON string. Overwrites same keys in config/recipe.
+        Falls back to recipe (service-level default config) if neither is provided.
         """
         try:
+            override_config_str = override_config
+
             base_config: Dict[str, Any] = {}
             override_config: Dict[str, Any] = {}
 
-            if config_file and config_file.filename:
-                content = (await config_file.read()).decode("utf-8")
+            if config and config.filename:
+                content = (await config.read()).decode("utf-8")
                 base_config = parse_config_content(content)
-                logger.info(f"start_training: config_file parsed ({config_file.filename})")
+                logger.info(f"start_training: config parsed ({config.filename})")
+            elif default_config is not None:
+                default_config_path = pathlib.Path(default_config)
+                base_config = parse_config_content(default_config_path.read_text())
+                logger.info(f"start_training: using default config ({default_config_path})")
 
-            if config and config.strip():
+            if override_config_str and override_config_str.strip():
                 try:
-                    override_config = json.loads(config)
+                    override_config = json.loads(override_config_str)
                 except json.JSONDecodeError as e:
                     if base_config:
-                        logger.warning(f"start_training: config field invalid JSON, ignoring (using config_file only): {e}")
+                        logger.warning(f"start_training: override_config field invalid JSON, ignoring: {e}")
                         override_config = {}
                     else:
                         raise HTTPException(
                             status_code=400,
-                            detail=f"config must be valid JSON object, e.g. {{\"model_name_or_path\": \"llama2\", \"dataset\": \"alpaca\"}}. Error: {e}",
+                            detail=f"override_config must be valid JSON object, e.g. {{\"model_name_or_path\": \"llama2\", \"dataset\": \"alpaca\"}}. Error: {e}",
                         )
                 else:
                     if not isinstance(override_config, dict):
-                        raise HTTPException(status_code=400, detail="config must be a JSON object")
+                        raise HTTPException(status_code=400, detail="override_config must be a JSON object")
 
             if not base_config and not override_config:
                 raise HTTPException(
                     status_code=400,
-                    detail="Provide config and/or config_file (at least one required)",
+                    detail="Provide config and/or override_config, or start the server with --config",
                 )
 
-            config = merge_config(base_config, override_config) if base_config and override_config else (base_config or override_config)
-            config = resolve_config(config)
-            job = dock.start(config)
+            merged_config = merge_config(base_config, override_config) if base_config and override_config else (base_config or override_config)
+            merged_config = resolve_config(merged_config)
+            job = dock.start(merged_config)
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             if job.status == "failed":
                 raise HTTPException(status_code=500, detail=job.error_message or "Failed to start")
@@ -359,6 +370,7 @@ def run_server(
     dryrun_duration: int = 300,
     logger: Optional[logging.Logger] = None,
     reload: bool = False,
+    config: Optional[Union[str, pathlib.Path]] = None,
 ):
     """
     Run the FastAPI server.
@@ -370,6 +382,7 @@ def run_server(
         dryrun_duration: Dryrun simulated training duration in seconds (default: 300)
         logger: Optional logger instance
         reload: Enable auto-reload for development
+        config: Default config file path used as base when start_training is called without a config
     """
     import uvicorn
 
@@ -377,6 +390,7 @@ def run_server(
         dryrun=dryrun,
         dryrun_duration=dryrun_duration,
         logger=logger,
+        default_config=config,
     )
     uvicorn.run(api_app, host=host, port=port, reload=reload)
 
@@ -398,6 +412,11 @@ def main() -> int:
         type=int,
         default=300,
         help="Dryrun simulated training duration in seconds (default: 300)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Default config file (recipe) used as base when start_training is called without a config",
     )
 
     args = parser.parse_args()
@@ -428,6 +447,7 @@ def main() -> int:
             dryrun_duration=args.dryrun_duration,
             logger=logger,
             reload=args.reload,
+            config=args.config,
         )
     except Exception as e:
         logger.error(f"API server error: {e}", exc_info=True)
