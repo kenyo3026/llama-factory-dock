@@ -19,6 +19,10 @@ from .utils.logger import enable_rich_logger
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3028
 
+# Resolve relative to package so dock-mcp works regardless of cwd
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+DEFAULT_CONFIG_PATH = str(_PROJECT_ROOT / "recipes" / "train_lora" / "qwen3_lora_sft.yaml")
+
 MCP_NAME = "LlamaFactory Dock"
 MCP_INSTRUCTION = """MCP server for LlamaFactory training orchestration.
 
@@ -583,11 +587,9 @@ Examples:
         default=300,
         help="Dryrun simulated training duration in seconds (default: 300)",
     )
-    # MCP has no file upload; start_training requires a base config. Temporarily required until
-    # we support full config via override_config only (agent-provided complete config).
     parser.add_argument(
         "--config",
-        required=True,
+        default=DEFAULT_CONFIG_PATH,
         help="Default config file (recipe) used as base when start_training is called",
     )
 
