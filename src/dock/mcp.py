@@ -11,8 +11,8 @@ from typing import Optional, Dict, Any, Union
 
 from fastmcp import FastMCP
 
-from .dock import LlamaFactoryDock, LlamaFactoryDryRunDock
-from .utils.config_handler import merge_config, parse_config_content, resolve_config
+from .dock import LlamaFactoryDock, LlamaFactoryDryRunDock, DOCKER_CONTAINER_ROOT
+from .utils.config_handler import parse_config_content, resolve_config
 from .utils.logger import enable_rich_logger
 
 
@@ -115,18 +115,25 @@ def setup_mcp_server(
                 base_config = parse_config_content(pathlib.Path(default_config).read_text())
                 logger.info(f"start_training: loaded default config ({default_config})")
 
-            effective_override: Dict[str, Any] = override_config or {}
+            override_config: Dict[str, Any] = override_config or {}
 
-            if not base_config and not effective_override:
+            if not base_config and not override_config:
                 return {
                     "error": "Provide override_config, or start the server with --config",
                     "status": "failed",
                 }
 
-            merged = merge_config(base_config, effective_override) if base_config and effective_override else (base_config or effective_override)
-            resolved = resolve_config(merged)
-            logger.info("start_training: starting job")
-            job = dock.start(resolved)
+            if base_config:
+                # Pass base config as YAML file; override_config becomes CLI key=value args
+                # so llamafactory handles the merge at runtime (OmegaConf override semantics)
+                logger.info("start_training: starting job with base config + override kwargs")
+                job = dock.start(base_config, **override_config)
+            else:
+                # No base config — override_config is the full config
+                resolved = resolve_config(override_config)
+                logger.info("start_training: starting job with full override config")
+                job = dock.start(resolved)
+
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             return job.to_dict()
         except ValueError as e:
