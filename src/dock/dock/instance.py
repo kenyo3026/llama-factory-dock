@@ -65,6 +65,7 @@ class TrainingJob:
     completed_at: Optional[datetime] = None
 
     error_message: Optional[str] = None
+    recent_logs: Optional[List[str]] = None  # Tail logs snapshot, populated when include_logs=True in poll()
 
     def get_progress_percentage(self) -> float:
         """Calculate training progress percentage"""
@@ -88,6 +89,7 @@ class TrainingJob:
             "started_at": self.started_at.isoformat() if isinstance(self.started_at, datetime) else self.started_at,
             "completed_at": self.completed_at.isoformat() if isinstance(self.completed_at, datetime) else self.completed_at,
             "error_message": self.error_message,
+            "recent_logs": self.recent_logs,
         }
 
 
@@ -238,19 +240,53 @@ class LlamaFactoryDock:
         self.logger.info(f"Job resumed: {job.job_id}")
         return job
 
-    def poll(self, job_or_container_id: str) -> TrainingJob:
-        """Get job status (accepts job_id or container_id)"""
+    def poll(self, job_or_container_id: str, include_logs: bool = True, log_tail: int = 50) -> TrainingJob:
+        """Get job status (accepts job_id or container_id).
+
+        Args:
+            job_or_container_id: Either job ID (8 chars) or container ID (12 chars).
+            include_logs: Whether to attach a tail log snapshot to the returned job.
+                          Defaults to True so callers get status + recent output in one call.
+            log_tail: Number of recent log lines to include when include_logs=True (default: 50).
+        """
         if job_or_container_id in self._preparing_jobs:
             return self._preparing_jobs[job_or_container_id]
         container = self._resolve_container(job_or_container_id)
         container.reload()
-        return self._container_to_job(container)
+        job = self._container_to_job(container)
+        if include_logs:
+            logs = container.logs(tail=log_tail, timestamps=True).decode('utf-8')
+            job.recent_logs = logs.split('\n')
+        return job
 
-    def poll_logs(self, job_or_container_id: str, tail: int = 100) -> List[str]:
-        """Get container logs (accepts job_id or container_id)"""
+    def poll_logs(
+        self,
+        job_or_container_id: str,
+        tail: int = 100,
+        since: Optional[str] = None,
+    ) -> List[str]:
+        """Get container logs (accepts job_id or container_id).
+
+        Args:
+            job_or_container_id: Either job ID (8 chars) or container ID (12 chars).
+            tail: Number of recent log lines to retrieve.
+            since: Only return logs after this relative duration (Go duration string).
+                   Format: "<number><unit>", e.g. "5m", "1h", "30s", "1h30m".
+                   The duration is relative to the remote Docker daemon's current time,
+                   so it is safe to use from a local client without clock-skew issues.
+
+                   Not supported (reserved for future use):
+                   - Unix timestamp (int/float): e.g. 1741872000
+                   - RFC 3339 string: e.g. "2026-03-13T10:00:00Z"
+                   These are avoided because they depend on local clock alignment
+                   with the remote Docker host.
+        """
         try:
             container = self._resolve_container(job_or_container_id)
-            logs = container.logs(tail=tail, timestamps=True).decode('utf-8')
+            kwargs = {"tail": tail, "timestamps": True}
+            if since is not None:
+                kwargs["since"] = since
+            logs = container.logs(**kwargs).decode('utf-8')
             return logs.split('\n')
         except ValueError as e:
             return [str(e)]

@@ -307,29 +307,43 @@ def setup_mcp_server(
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
-    def get_training_status(job_or_container_id: str) -> dict:
+    def get_training_status(job_or_container_id: str, include_logs: bool = True) -> dict:
         """
-        Get current status and details of a training job.
+        Get current status and details of a training job, including recent log output.
 
-        **Use Case**: Poll job status to monitor training progress, check if job completed/failed.
+        **Use Case**: PRIMARY tool for monitoring training. Call this whenever you want
+        to know what is happening with a job — it returns job state AND the last 50 lines
+        of training output in a single call.
+
+        **IMPORTANT — include_logs**:
+        - Default is True. Keep it True unless you explicitly only need the status field
+          and want to save tokens. When in doubt, leave it as True.
+        - Set include_logs=False only when you are certain you do not need log output,
+          e.g. a lightweight existence/state check inside a loop.
+        - If you need more than 50 lines or want to filter by time window, use
+          `get_training_logs` instead (supports tail and since parameters).
 
         **Returned Info**:
-        - status: Current state (pending, running, paused, exited, failed)
-        - progress_percentage: Training progress (0-100)
-        - metrics: Training metrics if available (loss, accuracy, etc.)
+        - status: Current state (pending, running, paused, completed, failed)
+        - recent_logs: Last 50 lines of container stdout/stderr. Shows epoch/step progress,
+                       loss values, errors, dataset loading, etc. Only present when include_logs=True.
         - timestamps: created_at, started_at, completed_at
-        - error_message: If job failed
+        - error_message: Exit error summary if job failed
+        - progress_percentage: [NOT IMPLEMENTED] Always 0.0, ignore this field.
+        - metrics: [NOT IMPLEMENTED] Always null, ignore this field.
 
         Args:
             job_or_container_id: Either job ID (8 chars) or container ID (12 chars)
+            include_logs: Whether to include the last 50 log lines in the response.
+                          Default True. Set False only when log output is explicitly not needed.
 
         Returns:
             Full job info dict with all available details.
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
-        logger.debug(f"get_training_status: job_or_container_id={job_or_container_id}")
+        logger.debug(f"get_training_status: job_or_container_id={job_or_container_id} include_logs={include_logs}")
         try:
-            job = dock.poll(job_or_container_id)
+            job = dock.poll(job_or_container_id, include_logs=include_logs)
             return job.to_dict()
         except ValueError as e:
             logger.warning(f"get_training_status: job not found job_or_container_id={job_or_container_id}: {e}")
@@ -339,7 +353,7 @@ def setup_mcp_server(
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
-    def get_training_logs(job_or_container_id: str, tail: int = 100) -> dict:
+    def get_training_logs(job_or_container_id: str, tail: int = 100, since: str = None) -> dict:
         """
         Retrieve training logs from a job's container.
 
@@ -353,17 +367,21 @@ def setup_mcp_server(
         Args:
             job_or_container_id: Either job ID (8 chars) or container ID (12 chars)
             tail: Number of recent log lines to retrieve (1-10000, default: 100)
+            since: Only return logs after this relative duration (Go duration string).
+                   Format: "<number><unit>", e.g. "5m", "1h", "30s", "1h30m".
+                   Safe to use from a local client — relative to the remote Docker daemon's clock.
+                   If omitted, returns the most recent `tail` lines regardless of time.
 
         Returns:
             Dict with job_id and logs (list of strings).
             Returns {"error": "...", "status": "not_found"} if job doesn't exist.
         """
-        logger.debug(f"get_training_logs: job_or_container_id={job_or_container_id} tail={tail}")
+        logger.debug(f"get_training_logs: job_or_container_id={job_or_container_id} tail={tail} since={since}")
         try:
             if tail < 1 or tail > 10000:
                 logger.warning(f"get_training_logs: invalid tail={tail}")
                 return {"error": "tail must be between 1 and 10000", "status": "invalid_param"}
-            logs = dock.poll_logs(job_or_container_id, tail=tail)
+            logs = dock.poll_logs(job_or_container_id, tail=tail, since=since)
             return {"job_id": job_or_container_id, "logs": logs}
         except ValueError as e:
             logger.warning(f"get_training_logs: job not found job_or_container_id={job_or_container_id}: {e}")

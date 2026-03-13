@@ -96,6 +96,7 @@ class MainArgs:
         # train status
         status_parser = train_sub.add_parser('status', help='Get job status')
         status_parser.add_argument('job_or_container_id', help=id_help)
+        status_parser.add_argument('--no-logs', action='store_true', default=False, help='Omit recent log output (default: logs are shown)')
 
         # train list
         train_sub.add_parser('list', help='List all jobs')
@@ -103,7 +104,8 @@ class MainArgs:
         # train logs
         logs_parser = train_sub.add_parser('logs', help='Show job logs')
         logs_parser.add_argument('job_or_container_id', help=id_help)
-        logs_parser.add_argument('--tail', type=int, default=cls.tail, help='Number of lines')
+        logs_parser.add_argument('--tail', type=int, default=cls.tail, help='Number of lines (default: 100)')
+        logs_parser.add_argument('--since', type=str, default=None, help="Go duration string, e.g. '5m', '1h'. Returns logs after this duration relative to Docker daemon clock.")
 
         # train delete
         delete_parser = train_sub.add_parser('delete', help='Delete a training job')
@@ -257,11 +259,11 @@ class Main:
     def cmd_training_status(dock: LlamaFactoryDock, args) -> int:
         """Get job status"""
         try:
-            job = dock.poll(args.job_or_container_id)
+            include_logs = not getattr(args, 'no_logs', False)
+            job = dock.poll(args.job_or_container_id, include_logs=include_logs)
 
             console.print(f"\n[bold]Training Job: {job.job_id}[/bold]")
             console.print(f"Status: {job.status}")
-            console.print(f"Progress: {job.get_progress_percentage():.1f}%")
             console.print(f"Created: {job.created_at}")
 
             if job.started_at:
@@ -270,6 +272,12 @@ class Main:
                 console.print(f"Completed: {job.completed_at}")
             if job.error_message:
                 console.print(f"[red]Error: {job.error_message}[/red]")
+
+            if job.recent_logs:
+                console.print(f"\n[bold]Recent Logs:[/bold]")
+                for line in job.recent_logs:
+                    if line:
+                        console.print(line, highlight=False)
 
             return 0
         except Exception as e:
@@ -310,7 +318,7 @@ class Main:
     def cmd_training_logs(dock: LlamaFactoryDock, args) -> int:
         """Show job logs"""
         try:
-            logs = dock.poll_logs(args.job_or_container_id, tail=args.tail)
+            logs = dock.poll_logs(args.job_or_container_id, tail=args.tail, since=args.since)
 
             console.print(f"\n[bold]Logs for job: {args.job_or_container_id}[/bold]\n")
             for line in logs:

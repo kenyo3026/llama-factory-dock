@@ -48,6 +48,7 @@ class JobResponse(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
+    recent_logs: Optional[List[str]] = None
 
 
 class JobsListResponse(BaseModel):
@@ -246,11 +247,14 @@ def setup_app(
 
     # --- Monitoring ---
     @app.get("/api/v1/training/{job_id}/status", response_model=JobResponse)
-    async def get_status(job_id: str):
+    async def get_status(
+        job_id: str,
+        include_logs: bool = Query(True, description="Include last 50 log lines in response. Set False for lightweight status-only check."),
+    ):
         """Get job status (poll)"""
-        logger.debug(f"get_status: job_id={job_id}")
+        logger.debug(f"get_status: job_id={job_id} include_logs={include_logs}")
         try:
-            job = dock.poll(job_id)
+            job = dock.poll(job_id, include_logs=include_logs)
             return JobResponse(**job.to_dict())
         except ValueError as e:
             logger.warning(f"get_status: job not found job_id={job_id}: {e}")
@@ -263,11 +267,12 @@ def setup_app(
     async def get_logs(
         job_id: str,
         tail: int = Query(100, ge=1, le=10000, description="Number of log lines"),
+        since: Optional[str] = Query(None, description="Go duration string, e.g. '5m', '1h'. Returns logs after this duration relative to Docker daemon clock."),
     ):
         """Get job logs"""
-        logger.debug(f"get_logs: job_id={job_id} tail={tail}")
+        logger.debug(f"get_logs: job_id={job_id} tail={tail} since={since}")
         try:
-            logs = dock.poll_logs(job_id, tail=tail)
+            logs = dock.poll_logs(job_id, tail=tail, since=since)
             return LogsResponse(job_id=job_id, logs=logs)
         except ValueError as e:
             logger.warning(f"get_logs: job not found job_id={job_id}: {e}")
