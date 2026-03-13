@@ -5,9 +5,11 @@ Provides HTTP endpoints for training control, monitoring, and task management.
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import pathlib
+from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query, File, Form, UploadFile
@@ -66,10 +68,16 @@ class CheckpointsResponse(BaseModel):
     checkpoints: List[str]
 
 
+class TrainHelpResponse(BaseModel):
+    """Train help response"""
+    help_text: str
+
+
 def setup_app(
     dryrun: bool = False,
     dryrun_duration: int = 300,
     logger: Optional[logging.Logger] = None,
+    prefetch_on_startup: bool = True,
 ) -> FastAPI:
     """
     Create and configure FastAPI application.
@@ -78,6 +86,7 @@ def setup_app(
         dryrun: Use LlamaFactoryDryRunDock (simulated training, no GPU).
         dryrun_duration: Dryrun simulated training duration in seconds (default: 300).
         logger: Optional logger instance. Uses module logger if not provided.
+        prefetch_on_startup: If True, prefetch train help during lifespan startup.
 
     Returns:
         Configured FastAPI application.
@@ -89,10 +98,19 @@ def setup_app(
         if dryrun else LlamaFactoryDock(logger=logger)
     )
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if prefetch_on_startup:
+            logger.info("Prefetching train help at startup...")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, dock.prefetch_train_help)
+        yield
+
     app = FastAPI(
         title="LlamaFactory Dock API",
         description="API for Docker-based LlamaFactory training orchestration",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # --- Health ---
@@ -305,6 +323,26 @@ def setup_app(
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             logger.error(f"get_checkpoints: failed job_id={job_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # --- Info ---
+    # @app.get("/api/v1/info/train-help", response_model=TrainHelpResponse)
+    @app.get("/api/v1/training/help", response_model=TrainHelpResponse)
+    async def get_train_help():
+        """
+        Get llamafactory-cli train --help output from the current Docker image.
+
+        Result is cached by image digest (in-memory + file). The first call may take
+        30-60 seconds; subsequent calls return instantly from cache.
+        """
+        logger.info("get_train_help: fetching train help")
+        try:
+            loop = asyncio.get_event_loop()
+            help_text = await loop.run_in_executor(None, dock.get_train_help)
+            logger.info("get_train_help: success")
+            return TrainHelpResponse(help_text=help_text)
+        except Exception as e:
+            logger.error(f"get_train_help: failed: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     return app
