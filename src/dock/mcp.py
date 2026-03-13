@@ -156,6 +156,54 @@ def setup_mcp_server(
     mcp.tool()(start_training)
 
     @mcp.tool()
+    def resolve_training_cmd(override_config: Optional[Dict[str, Any]] = None) -> dict:
+        """
+        Resolve the full llamafactory-cli train command without launching a container.
+
+        Returns the exact command that would be passed to the Docker container if
+        start_training were called with the same override_config. Mirrors start_training's
+        logic: base config goes into the YAML file, override_config becomes key=value CLI args.
+
+        **Use Case**: Preview or validate the training command before committing to a real run.
+
+        Args:
+            override_config: Optional override dict (same as start_training).
+
+        Returns:
+            Dict with "command" (the full llamafactory-cli train ... string).
+            Returns {"error": "...", "status": "failed"} on failure.
+        """
+        try:
+            base_config: Dict[str, Any] = {}
+            if default_config is not None:
+                base_config = parse_config_content(pathlib.Path(default_config).read_text())
+
+            override_config: Dict[str, Any] = override_config or {}
+
+            if not base_config and not override_config:
+                return {
+                    "error": "Provide override_config, or start the server with --config",
+                    "status": "failed",
+                }
+
+            config_placeholder = f"{DOCKER_CONTAINER_ROOT}/temp_configs/config.yaml"
+
+            def _fmt(v: Any) -> str:
+                return "true" if v is True else "false" if v is False else str(v)
+
+            override_args = [f"{k}={_fmt(v)}" for k, v in override_config.items()]
+            command = ["llamafactory-cli", "train", config_placeholder] + override_args
+
+            logger.info(f"resolve_training_cmd: {' '.join(command)}")
+            return {"command": " ".join(command)}
+        except ValueError as e:
+            logger.warning(f"resolve_training_cmd: invalid config: {e}")
+            return {"error": str(e), "status": "failed"}
+        except Exception as e:
+            logger.error(f"resolve_training_cmd: failed to resolve command: {e}", exc_info=True)
+            return {"error": str(e), "status": "failed"}
+
+    @mcp.tool()
     def stop_training(job_or_container_id: str, force: bool = False) -> dict:
         """
         Stop a running or paused training job gracefully or forcefully.
