@@ -31,15 +31,15 @@ LlamaFactory is a well-known unified framework for efficient LLM fine-tuning, su
 
 **Key Points**:
 - All training configurations follow LlamaFactory's native format
-- The server may be started with a default config (recipe); `override_config` in `start_training` merges on top of it
+- The server may be started with a base config (recipe); `override_config` in `start_training` merges on top of it
 - Use the same parameter names and structure as LlamaFactory YAML config
 - Common LlamaFactory parameters include: model_name_or_path, dataset, stage (pt/sft/rm/ppo/dpo/kto), learning_rate, num_train_epochs, per_device_train_batch_size, etc.
 
 **Recommended Workflow**:
-1. Call `get_server_config` to inspect the server's current default config (recipe), if any
+1. Call `get_server_config` to inspect the server's current base config (recipe), if any
 2. Call `get_training_help` to discover all available parameters for the current LlamaFactory version
-3. Construct an override_config dict based on what you want to change from the default config
-4. Call `start_training` with override_config (or rely on the server default config entirely)
+3. Construct an override_config dict based on what you want to change from the base config
+4. Call `start_training` with override_config (or rely on the server base config entirely)
 
 **Available Operations**: get train help, start, stop, pause, resume, and monitor training jobs. Each job runs in an isolated Docker container.
 """
@@ -47,9 +47,9 @@ LlamaFactory is a well-known unified framework for efficient LLM fine-tuning, su
 MCP_START_TRAINING_INSTUCTION = """Start a new LlamaFactory training job in a Docker container.
 
 **Config Resolution** (in priority order):
-1. Server default config (--config at startup) is loaded as base, if provided.
+1. Server base config (--config at startup) is loaded as base, if provided.
 2. override_config is merged on top of the base config (same keys win).
-3. If neither default config nor override_config is provided, returns an error.
+3. If neither base config nor override_config is provided, returns an error.
 
 **override_config Format**: LlamaFactory config as a dictionary (JSON object).
 Use the same keys as LlamaFactory's native YAML config.
@@ -60,14 +60,14 @@ Use the same keys as LlamaFactory's native YAML config.
 - Supports various finetuning methods: lora, full, freeze, etc.
 - Call get_training_help() first to discover all valid parameter names.
 
-**Server Default Config (Base Recipe)**:
+**Server Base Config (Recipe)**:
 This is the base training config loaded when the server started (via --config).
 Your override_config will be merged ON TOP of this — only specify keys you want to change.
 If this is None, your override_config must be a complete standalone config.
 {base_training_config}
 
 Args:
-    override_config: Optional override dict merged on top of the server default config.
+    override_config: Optional override dict merged on top of the server base config.
         If the server was not started with --config, this becomes the full config.
 
 Returns:
@@ -87,7 +87,7 @@ def setup_mcp_server(
 
     Args:
         prefetch_on_startup: If True, prefetch train help at startup to warm the cache.
-        default_config: Path to default config file (recipe). Used as base config in
+        default_config: Path to base config file (recipe). Used in
             start_training when override_config alone is provided. Validated at startup.
 
     Returns:
@@ -96,7 +96,7 @@ def setup_mcp_server(
     logger = logger or logging.getLogger(__name__)
 
     if default_config is not None and not pathlib.Path(default_config).exists():
-        raise FileNotFoundError(f"Default config file not found: {default_config}")
+        raise FileNotFoundError(f"Base config file not found: {default_config}")
 
     dock: LlamaFactoryDock = (
         LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
@@ -117,7 +117,7 @@ def setup_mcp_server(
             base_config: Dict[str, Any] = {}
             if default_config is not None:
                 base_config = parse_config_content(pathlib.Path(default_config).read_text())
-                logger.info(f"start_training: loaded default config ({default_config})")
+                logger.info(f"start_training: loaded base config ({default_config})")
 
             override_config: Dict[str, Any] = override_config or {}
 
@@ -502,29 +502,29 @@ def setup_mcp_server(
     @mcp.tool()
     def get_server_config() -> dict:
         """
-        Get the server's current default config (recipe).
+        Get the server's current base config (recipe).
 
         **Use Case**: Call this before start_training to understand what base configuration
         the server was started with. This lets you decide which keys to pass in override_config
-        and which are already covered by the default config.
+        and which are already covered by the base config.
 
-        **When no default config is set**: Returns {"default_config": null, "config": null} to
+        **When no base config is set**: Returns {"base_config": null, "config": null} to
         indicate start_training requires a full override_config.
 
         Returns:
             Dict with:
-              - "default_config": path to the config file, or null if not set
+              - "base_config": path to the config file, or null if not set
               - "config": parsed config dict, or null if not set
         """
         if default_config is None:
-            logger.debug("get_server_config: no default config set")
-            return {"default_config": None, "config": None}
+            logger.debug("get_server_config: no base config set")
+            return {"base_config": None, "config": None}
         try:
             parsed = parse_config_content(pathlib.Path(default_config).read_text())
-            logger.debug(f"get_server_config: returning default config ({default_config})")
-            return {"default_config": str(default_config), "config": parsed}
+            logger.debug(f"get_server_config: returning base config ({default_config})")
+            return {"base_config": str(default_config), "config": parsed}
         except Exception as e:
-            logger.error(f"get_server_config: failed to read default config: {e}", exc_info=True)
+            logger.error(f"get_server_config: failed to read base config: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
@@ -590,7 +590,7 @@ Examples:
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG_PATH,
-        help="Default config file (recipe) used as base when start_training is called",
+        help="Base config file (recipe) used when start_training is called",
     )
 
     args = parser.parse_args()
@@ -612,7 +612,7 @@ Examples:
         logger.info(f"Dryrun duration: {args.dryrun_duration}s")
     logger.info(f"Transport: {args.transport}")
     if args.config:
-        logger.info(f"Default config: {args.config}")
+        logger.info(f"Base config: {args.config}")
     logger.info(f"Log directory: {logger_path.absolute()}")
 
     try:

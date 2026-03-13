@@ -88,7 +88,7 @@ def setup_app(
         dryrun_duration: Dryrun simulated training duration in seconds (default: 300).
         logger: Optional logger instance. Uses module logger if not provided.
         prefetch_on_startup: If True, prefetch train help during lifespan startup.
-        default_config: Default config file path used as base when start_training is called without a config.
+        default_config: Base config file path used when start_training is called without a config.
 
     Returns:
         Configured FastAPI application.
@@ -96,7 +96,7 @@ def setup_app(
     logger = logger or logging.getLogger(__name__)
 
     if default_config is not None and not pathlib.Path(default_config).exists():
-        raise FileNotFoundError(f"Default config file not found: {default_config}")
+        raise FileNotFoundError(f"Base config file not found: {default_config}")
 
     dock: LlamaFactoryDock = (
         LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
@@ -143,7 +143,7 @@ def setup_app(
 
         **config** (optional): YAML/JSON file upload. Overrides recipe when provided.
         **override_config** (optional): Override config as JSON string. Overwrites same keys in config/recipe.
-        Falls back to recipe (service-level default config) if neither is provided.
+        Falls back to recipe (service-level base config) if neither is provided.
         """
         try:
             override_config_str = override_config
@@ -158,7 +158,7 @@ def setup_app(
             elif default_config is not None:
                 default_config_path = pathlib.Path(default_config)
                 base_config = parse_config_content(default_config_path.read_text())
-                logger.info(f"start_training: using default config ({default_config_path})")
+                logger.info(f"start_training: using base config ({default_config_path})")
 
             if override_config_str and override_config_str.strip():
                 try:
@@ -382,7 +382,7 @@ def run_server(
         dryrun_duration: Dryrun simulated training duration in seconds (default: 300)
         logger: Optional logger instance
         reload: Enable auto-reload for development
-        config: Default config file path used as base when start_training is called without a config
+        config: Base config file path used when start_training is called without a config
     """
     import uvicorn
 
@@ -416,7 +416,7 @@ def main() -> int:
     parser.add_argument(
         "--config",
         default=None,
-        help="Default config file (recipe) used as base when start_training is called without a config",
+        help="Base config file (recipe) used when start_training is called without a config",
     )
 
     args = parser.parse_args()
