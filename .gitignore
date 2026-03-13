@@ -68,6 +68,7 @@ htmlcov/
 
 # test files
 test_*.py
+!src/**/tests/*.py
 
 # .python-version
 .python-version
