@@ -8,6 +8,13 @@ import tempfile
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: mark test as integration test (requires running Docker daemon and image)",
+    )
+
+
 @pytest.fixture
 def tmp_cache_dir():
     """Temporary directory for TRAIN_HELP_CACHE_DIR in tests."""
