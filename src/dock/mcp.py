@@ -7,12 +7,12 @@ Provides MCP tools for training control: start, stop, pause, resume.
 import argparse
 import logging
 import pathlib
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 
 from fastmcp import FastMCP
 
 from .dock import LlamaFactoryDock, LlamaFactoryDryRunDock
-from .utils.config_handler import resolve_config
+from .utils.config_handler import merge_config, parse_config_content, resolve_config
 from .utils.logger import enable_rich_logger
 
 
@@ -27,16 +27,48 @@ LlamaFactory is a well-known unified framework for efficient LLM fine-tuning, su
 
 **Key Points**:
 - All training configurations follow LlamaFactory's native format
-- The `config` parameter in `start_training` accepts a dictionary (JSON object) with LlamaFactory config
+- The server may be started with a default config (recipe); `override_config` in `start_training` merges on top of it
 - Use the same parameter names and structure as LlamaFactory YAML config
 - Common LlamaFactory parameters include: model_name_or_path, dataset, stage (pt/sft/rm/ppo/dpo/kto), learning_rate, num_train_epochs, per_device_train_batch_size, etc.
 
 **Recommended Workflow**:
-1. Call `get_train_help` to discover all available parameters for the current LlamaFactory version
-2. Construct a config dict using valid parameter names from the help output
-3. Call `start_training` with the config
+1. Call `get_server_config` to inspect the server's current default config (recipe), if any
+2. Call `get_training_help` to discover all available parameters for the current LlamaFactory version
+3. Construct an override_config dict based on what you want to change from the default config
+4. Call `start_training` with override_config (or rely on the server default config entirely)
 
 **Available Operations**: get train help, start, stop, pause, resume, and monitor training jobs. Each job runs in an isolated Docker container.
+"""
+
+MCP_START_TRAINING_INSTUCTION = """Start a new LlamaFactory training job in a Docker container.
+
+**Config Resolution** (in priority order):
+1. Server default config (--config at startup) is loaded as base, if provided.
+2. override_config is merged on top of the base config (same keys win).
+3. If neither default config nor override_config is provided, returns an error.
+
+**override_config Format**: LlamaFactory config as a dictionary (JSON object).
+Use the same keys as LlamaFactory's native YAML config.
+
+**Configuration Tips**:
+- Use standard LlamaFactory parameter names (model_name_or_path, dataset, stage, etc.)
+- Common training stages: sft, pt, rm, ppo, dpo, kto
+- Supports various finetuning methods: lora, full, freeze, etc.
+- Call get_training_help() first to discover all valid parameter names.
+
+**Server Default Config (Base Recipe)**:
+This is the base training config loaded when the server started (via --config).
+Your override_config will be merged ON TOP of this — only specify keys you want to change.
+If this is None, your override_config must be a complete standalone config.
+{base_training_config}
+
+Args:
+    override_config: Optional override dict merged on top of the server default config.
+        If the server was not started with --config, this becomes the full config.
+
+Returns:
+    Job info dict with job_id (8 chars), container_id (12 chars), status, config, timestamps.
+    Returns {{"error": "...", "status": "failed"}} on failure.
 """
 
 def setup_mcp_server(
@@ -44,17 +76,23 @@ def setup_mcp_server(
     dryrun: bool = False,
     dryrun_duration: int = 300,
     prefetch_on_startup: bool = True,
+    default_config: Optional[Union[str, pathlib.Path]] = None,
 ) -> FastMCP:
     """
     Create and configure FastMCP server for LlamaFactory Dock.
 
     Args:
         prefetch_on_startup: If True, prefetch train help at startup to warm the cache.
+        default_config: Path to default config file (recipe). Used as base config in
+            start_training when override_config alone is provided. Validated at startup.
 
     Returns:
         Configured FastMCP server instance.
     """
     logger = logger or logging.getLogger(__name__)
+
+    if default_config is not None and not pathlib.Path(default_config).exists():
+        raise FileNotFoundError(f"Default config file not found: {default_config}")
 
     dock: LlamaFactoryDock = (
         LlamaFactoryDryRunDock(dryrun_training_duration=dryrun_duration, logger=logger)
@@ -70,30 +108,24 @@ def setup_mcp_server(
         instructions=MCP_INSTRUCTION,
     )
 
-    @mcp.tool()
-    def start_training(config: Dict[str, Any]) -> dict:
-        """
-        Start a new LlamaFactory training job in a Docker container.
-
-        **Config Format**: LlamaFactory config as a dictionary (JSON object).
-        Use the same keys as LlamaFactory's native YAML config.
-
-        **Configuration Tips**:
-        - Use standard LlamaFactory parameter names (model_name_or_path, dataset, stage, etc.)
-        - Refer to LlamaFactory documentation or examples for parameter details
-        - Common training stages: sft, pt, rm, ppo, dpo, kto
-        - Supports various finetuning methods: lora, full, freeze, etc.
-
-        Args:
-            config: LlamaFactory config as dictionary. Same structure as LlamaFactory YAML config.
-
-        Returns:
-            Job info dict with job_id (8 chars), container_id (12 chars), status, config, timestamps.
-            Returns {"error": "...", "status": "failed"} on failure.
-        """
+    def start_training(override_config: Optional[Dict[str, Any]] = None) -> dict:
         try:
-            resolved = resolve_config(config)
-            logger.info("start_training: starting job with config=dict")
+            base_config: Dict[str, Any] = {}
+            if default_config is not None:
+                base_config = parse_config_content(pathlib.Path(default_config).read_text())
+                logger.info(f"start_training: loaded default config ({default_config})")
+
+            effective_override: Dict[str, Any] = override_config or {}
+
+            if not base_config and not effective_override:
+                return {
+                    "error": "Provide override_config, or start the server with --config",
+                    "status": "failed",
+                }
+
+            merged = merge_config(base_config, effective_override) if base_config and effective_override else (base_config or effective_override)
+            resolved = resolve_config(merged)
+            logger.info("start_training: starting job")
             job = dock.start(resolved)
             logger.info(f"start_training: job started job_id={job.job_id} container_id={job.container_id}")
             return job.to_dict()
@@ -103,6 +135,18 @@ def setup_mcp_server(
         except Exception as e:
             logger.error(f"start_training: failed to start job: {e}", exc_info=True)
             return {"error": str(e), "status": "failed"}
+
+    if default_config is not None:
+        try:
+            _config_yaml = pathlib.Path(default_config).read_text()
+            _config_hint = f"Path: `{default_config}`\n```yaml\n{_config_yaml}```"
+        except Exception:
+            _config_hint = f"Path: `{default_config}` (unable to read)"
+    else:
+        _config_hint = "None"
+
+    start_training.__doc__ = MCP_START_TRAINING_INSTUCTION.format(base_training_config=_config_hint)
+    mcp.tool()(start_training)
 
     @mcp.tool()
     def stop_training(job_or_container_id: str, force: bool = False) -> dict:
@@ -397,6 +441,34 @@ def setup_mcp_server(
             return {"error": str(e), "status": "failed"}
 
     @mcp.tool()
+    def get_server_config() -> dict:
+        """
+        Get the server's current default config (recipe).
+
+        **Use Case**: Call this before start_training to understand what base configuration
+        the server was started with. This lets you decide which keys to pass in override_config
+        and which are already covered by the default config.
+
+        **When no default config is set**: Returns {"default_config": null, "config": null} to
+        indicate start_training requires a full override_config.
+
+        Returns:
+            Dict with:
+              - "default_config": path to the config file, or null if not set
+              - "config": parsed config dict, or null if not set
+        """
+        if default_config is None:
+            logger.debug("get_server_config: no default config set")
+            return {"default_config": None, "config": None}
+        try:
+            parsed = parse_config_content(pathlib.Path(default_config).read_text())
+            logger.debug(f"get_server_config: returning default config ({default_config})")
+            return {"default_config": str(default_config), "config": parsed}
+        except Exception as e:
+            logger.error(f"get_server_config: failed to read default config: {e}", exc_info=True)
+            return {"error": str(e), "status": "failed"}
+
+    @mcp.tool()
     def get_training_help() -> dict:
         """
         Get llamafactory-cli train --help output from the current Docker image.
@@ -456,6 +528,13 @@ Examples:
         default=300,
         help="Dryrun simulated training duration in seconds (default: 300)",
     )
+    # MCP has no file upload; start_training requires a base config. Temporarily required until
+    # we support full config via override_config only (agent-provided complete config).
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Default config file (recipe) used as base when start_training is called",
+    )
 
     args = parser.parse_args()
 
@@ -475,6 +554,8 @@ Examples:
     if args.dryrun:
         logger.info(f"Dryrun duration: {args.dryrun_duration}s")
     logger.info(f"Transport: {args.transport}")
+    if args.config:
+        logger.info(f"Default config: {args.config}")
     logger.info(f"Log directory: {logger_path.absolute()}")
 
     try:
@@ -482,6 +563,7 @@ Examples:
             logger=logger,
             dryrun=args.dryrun,
             dryrun_duration=args.dryrun_duration,
+            default_config=args.config,
         )
         if args.transport == "stdio":
             logger.info("Running MCP server with stdio transport")
