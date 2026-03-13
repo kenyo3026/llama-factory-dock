@@ -111,6 +111,10 @@ class LlamaFactoryDryRunDock(LlamaFactoryDock):
                 created_at=datetime.now(),
             )
 
+    def get_train_help(self) -> str:
+        """Return a stub in dryrun mode (no real container invocation)."""
+        return "[DRYRUN] llamafactory-cli train --help is not available in dryrun mode"
+
     def _build_dryrun_training_command(self) -> str:
         """Build dryrun training command that simulates realistic training logs"""
         total_steps = self.dryrun_training_duration

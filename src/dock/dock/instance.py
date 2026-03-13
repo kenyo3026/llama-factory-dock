@@ -12,6 +12,8 @@ from typing import Optional, Dict, List, Any, Union
 import docker
 from .utils.loader import ConfigLoader
 
+TRAIN_HELP_CACHE_DIR: pathlib.Path = pathlib.Path.home() / ".cache" / "llama-factory-dock"
+
 
 PROJECT_ROOT = pathlib.Path(os.getcwd())
 DATASET_DIR: pathlib.Path = PROJECT_ROOT / "datasets"
@@ -107,6 +109,11 @@ class LlamaFactoryDock:
 
         # In-memory jobs during preparation (e.g. PULLING_IMAGE) before container exists
         self._preparing_jobs: Dict[str, TrainingJob] = {}
+
+        # Two-layer cache for llamafactory-cli train --help output
+        # Key is the image digest (SHA256), so cache auto-invalidates when image changes
+        self._train_help_cache: Optional[str] = None
+        self._train_help_cache_key: Optional[str] = None
 
         self.logger.info(f"LlamaFactoryDock initialized")
         self.logger.debug(f"Docker image: {self.docker_image}")
@@ -432,6 +439,100 @@ class LlamaFactoryDock:
             return str(v)
 
         return [f"{k}={_fmt(v)}" for k, v in overrides.items()]
+
+    def get_train_help(self) -> str:
+        """
+        Get llamafactory-cli train --help output from the Docker image.
+
+        Uses a two-layer cache keyed by image digest:
+          1. In-memory: fastest, reset on process restart
+          2. File cache (~/.cache/llama-factory-dock/): survives restarts, shared across processes
+
+        If the image changes (e.g. after docker pull), the digest changes and both layers
+        are bypassed automatically.
+        """
+        self._ensure_image()
+        digest = self._get_image_digest()
+
+        # Layer 1: in-memory
+        if self._train_help_cache_key == digest and self._train_help_cache is not None:
+            self.logger.debug("train_help: in-memory cache hit")
+            return self._train_help_cache
+
+        # Layer 2: file cache
+        cached = self._read_train_help_file_cache(digest)
+        if cached is not None:
+            self.logger.debug("train_help: file cache hit")
+            self._train_help_cache = cached
+            self._train_help_cache_key = digest
+            return self._train_help_cache
+
+        # Cache miss: run container
+        self.logger.info("train_help: fetching from container...")
+        raw = self.docker_client.containers.run(
+            image=self.docker_image,
+            platform=self.docker_container_platform,
+            command=["llamafactory-cli", "train", "--help"],
+            remove=True,
+            stdout=True,
+            stderr=True,
+        )
+        result = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+        self._train_help_cache = result
+        self._train_help_cache_key = digest
+        self._write_train_help_file_cache(digest, result)
+        self.logger.info("train_help: fetched and cached")
+        return self._train_help_cache
+
+    def prefetch_train_help(self) -> Optional[str]:
+        """
+        Prefetch train help at service startup.
+
+        Non-throwing: logs a warning on failure instead of raising.
+        Intended to be called during startup for cache warmup and image validation.
+        """
+        try:
+            result = self.get_train_help()
+            self.logger.info("train_help prefetch: success")
+            return result
+        except Exception as e:
+            self.logger.warning(f"train_help prefetch failed (non-critical): {e}")
+            return None
+
+    def _get_image_digest(self) -> str:
+        """Return local image digest (SHA256 ID). Assumes image already exists locally."""
+        return self.docker_client.images.get(self.docker_image).id
+
+    def _get_train_help_cache_file(self, digest: str) -> pathlib.Path:
+        """Return path to file cache for the given image digest."""
+        return TRAIN_HELP_CACHE_DIR / f"train-help-{digest.replace(':', '-')[:20]}.txt"
+
+    def _read_train_help_file_cache(self, digest: str) -> Optional[str]:
+        """Read train help from file cache. Returns None if not found or on error."""
+        cache_file = self._get_train_help_cache_file(digest)
+        try:
+            if cache_file.exists():
+                return cache_file.read_text(encoding="utf-8")
+        except Exception as e:
+            self.logger.debug(f"train_help file cache read failed: {e}")
+        return None
+
+    def _write_train_help_file_cache(self, digest: str, content: str) -> None:
+        """Write train help to file cache atomically. Silently skips on error."""
+        cache_file = self._get_train_help_cache_file(digest)
+        try:
+            TRAIN_HELP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8",
+                dir=TRAIN_HELP_CACHE_DIR, delete=False, suffix=".tmp",
+            ) as f:
+                f.write(content)
+                tmp_path = f.name
+            os.replace(tmp_path, cache_file)
+            self.logger.debug(f"train_help written to file cache: {cache_file}")
+        except Exception as e:
+            self.logger.debug(f"train_help file cache write failed (non-critical): {e}")
 
     def _dump_temp_config(self, config: Dict[str, Any]) -> pathlib.Path:
         """Dump temporary YAML config file"""
